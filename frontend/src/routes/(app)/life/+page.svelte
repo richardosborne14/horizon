@@ -141,7 +141,7 @@
     const exp = await apiFetch('/recurring-expenses', {
       method: 'POST',
       body: JSON.stringify({
-        label: '',
+        label: 'Nouvelle dépense',
         annual_amount: 0,
         from_year: 2026,
         to_year: 2031,
@@ -225,6 +225,10 @@
   let debounceTimers: Record<string, ReturnType<typeof setTimeout>> = {};
 
   function debouncedSaveRecurring(id: string, field: string, value: any) {
+    // Guard: backend requires label min_length=1, never send empty string.
+    if (field === 'label' && (typeof value !== 'string' || !value.trim())) {
+      return;
+    }
     if (debounceTimers[id]) clearTimeout(debounceTimers[id]);
     debounceTimers[id] = setTimeout(() => {
       updateRecurring(id, { [field]: value });

@@ -53,6 +53,7 @@ def _scenario_a_input() -> ProjectionInput:
         current_age=40,
         target_age=70,
         current_year=2026,
+        post_retirement_years=0,  # Sprint 4 back-compat: no post-retirement phase
         monthly_gross=Decimal("3000"),
         growth_rate=Decimal("0"),
         ae_activity_type="bnc_non_reglementee",
@@ -244,6 +245,7 @@ def _scenario_b_input() -> ProjectionInput:
         current_age=40,
         target_age=70,
         current_year=2026,
+        post_retirement_years=0,  # Sprint 4 back-compat
         monthly_gross=Decimal("5000"),
         growth_rate=Decimal("0.03"),
         ae_activity_type="bnc_non_reglementee",
@@ -585,9 +587,10 @@ class TestScenarioBModerateSaver:
         assert milestones[0]["label"] == "100k€"
 
     def test_goal_detection(self):
-        """With monthly_revenue_goal=4000, the goal should be reached."""
+        """With monthly_revenue_goal=2000, the goal should be reached from
+        passive + project income (work salary excluded — it drops at retirement)."""
         inp = _scenario_b_input()
-        inp.monthly_revenue_goal = Decimal("4000")
+        inp.monthly_revenue_goal = Decimal("2000")
         timeline = project_timeline(inp)
         goal = find_goal_year(timeline)
         assert goal is not None
@@ -628,6 +631,7 @@ def _scenario_c_input() -> ProjectionInput:
         current_age=40,
         target_age=70,
         current_year=2026,
+        post_retirement_years=0,  # Sprint 4 back-compat
         monthly_gross=Decimal("8000"),
         growth_rate=Decimal("0.06"),
         ae_activity_type="bnc_non_reglementee",
@@ -867,7 +871,10 @@ class TestEdgeCases:
 
     def test_empty_input_produces_timeline(self):
         """Absolute minimum input should still produce valid results."""
-        inp = ProjectionInput(current_age=40, target_age=70, current_year=2026)
+        inp = ProjectionInput(
+            current_age=40, target_age=70, current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
+        )
         timeline = project_timeline(inp)
         assert len(timeline) == 30
         # Everything should be zero
@@ -881,6 +888,7 @@ class TestEdgeCases:
             current_age=40,
             target_age=70,
             current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
             monthly_gross=Decimal("0"),
         )
         timeline = project_timeline(inp)
@@ -893,6 +901,7 @@ class TestEdgeCases:
             current_age=40,
             target_age=70,
             current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
             monthly_gross=Decimal("1000"),
             monthly_expenses_total=Decimal("2000"),
             scale="moderate",
@@ -907,6 +916,7 @@ class TestEdgeCases:
             current_age=40,
             target_age=45,
             current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
             monthly_gross=Decimal("3000"),
             ae_activity_type="bnc_non_reglementee",
             scale="moderate",
@@ -921,6 +931,7 @@ class TestEdgeCases:
                 current_age=40,
                 target_age=70,
                 current_year=2026,
+                post_retirement_years=0,  # Sprint 4 back-compat
                 monthly_gross=Decimal("3000"),
                 ae_activity_type="bnc_non_reglementee",
                 scale=scale,
@@ -934,6 +945,7 @@ class TestEdgeCases:
             current_age=40,
             target_age=70,
             current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
             monthly_gross=Decimal("3000"),
             scale="moderate",
             life_entities=[
@@ -964,6 +976,7 @@ class TestEdgeCases:
             current_age=40,
             target_age=70,
             current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
             monthly_gross=Decimal("5000"),
             kids_birth_dates=[date(2020, 1, 1), date(2022, 5, 10)],
             caf_override_monthly=Decimal("200"),
@@ -979,6 +992,7 @@ class TestEdgeCases:
             current_age=40,
             target_age=70,
             current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
             monthly_gross=Decimal("5000"),
             caf_override_monthly=Decimal("200"),
             scale="moderate",
@@ -992,6 +1006,7 @@ class TestEdgeCases:
             current_age=40,
             target_age=70,
             current_year=2026,
+            post_retirement_years=0,  # Sprint 4 back-compat
             monthly_gross=Decimal("10000"),
             cesu_annual=Decimal("20000"),
             charity_annual=Decimal("50000"),

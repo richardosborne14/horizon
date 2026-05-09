@@ -37,6 +37,8 @@ VEHICLE_SPECS: dict[str, dict] = {
         "tax_free": True,
         "tax_rate": Decimal("0"),
         "ceiling": Decimal("22950"),
+        "regulated": True,  # rate tracks inflation
+        "overflow_target": "ldds",  # redirect excess to LDDS
         "risk": "Aucun",
         "color": "#22d3ee",
         "liquidity": "Immédiate",
@@ -50,6 +52,8 @@ VEHICLE_SPECS: dict[str, dict] = {
         "tax_free": True,
         "tax_rate": Decimal("0"),
         "ceiling": Decimal("12000"),
+        "regulated": True,  # rate tracks inflation
+        "overflow_target": "av_euro",  # redirect excess to AV euro
         "risk": "Aucun",
         "color": "#06b6d4",
         "liquidity": "Immédiate",

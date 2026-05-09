@@ -3,12 +3,12 @@ Projection engine — the heart of Horizon.
 
 A pure calculation function that ingests all user data (profile, life entities,
 recurring expenses, investments, projects, status change) and produces a
-year-by-year projection from current age to target retirement age.
+year-by-year projection from current age through retirement to age 95.
 
-This is the most complex single piece of code in Horizon. It walks every year,
-queries every data source, compounds every investment, ages every kid,
-replaces every car, and produces a timeline the frontend renders as charts,
-milestones, and a detailed table.
+Sprint 5 extends the engine with post-retirement drawdown modeling.
+After the target retirement age, work income drops to zero, expenses
+continue (inflation-adjusted), pension income begins, and savings are
+drawn down to cover the gap.
 
 Design principles:
   - Pure function — all data passed in, no DB access. Testable without setup.
@@ -28,13 +28,18 @@ from typing import Any
 from app.calculations.ae_rates import get_ae_rate, get_cfe_estimate
 from app.calculations.caf import estimate_monthly_caf
 from app.calculations.constants import INFLATION_SCALES
-from app.calculations.vehicles import VEHICLE_SPECS
+from app.calculations.vehicles import VEHICLE_SPECS, VEHICLE_ORDER
 
 logger = logging.getLogger(__name__)
 
 # Default current year — computed at call time for testability.
 # Tests may override by passing a custom current_year in ProjectionInput.
 _DEFAULT_CURRENT_YEAR = datetime.now().year
+
+# Post-retirement defaults
+_DEFAULT_POST_RETIREMENT_YEARS = 25  # simulate to age 95 (retire at 70 + 25)
+_AGE_CAP = 95  # hard cap — projection never goes beyond this age
+
 
 # ├─────────────────────────────────────────────────────────────────────────────
 # │ Input / Output data structures
@@ -53,6 +58,10 @@ class ProjectionInput:
     current_age: int
     target_age: int
     current_year: int = _DEFAULT_CURRENT_YEAR  # pin for testability
+
+    # Post-retirement
+    post_retirement_years: int = _DEFAULT_POST_RETIREMENT_YEARS
+    pension_monthly: Decimal = Decimal("0")  # placeholder until TASK-5.3
 
     # Revenue
     monthly_gross: Decimal = Decimal("0")
@@ -99,7 +108,7 @@ class ProjectionInput:
 
 @dataclass
 class YearProjection:
-    """A single year in the 30-year projection timeline.
+    """A single year in the projection timeline (accumulation + post-retirement).
 
     Serialised as JSON via the API layer (Pydantic models in schemas/).
     All monetary fields are Decimal — serialise as strings for JSON.
@@ -107,6 +116,9 @@ class YearProjection:
 
     year: int
     age: int
+
+    # Phase indicator
+    is_retirement: bool = False  # True for years after target retirement age
 
     # Revenue
     gross_annual: Decimal = Decimal("0")
@@ -129,8 +141,13 @@ class YearProjection:
     tax_credits: Decimal = Decimal("0")  # CESU + charity
     status_bonus: Decimal = Decimal("0")
 
+    # Post-retirement specific
+    pension_monthly: Decimal = Decimal("0")  # state pension estimate
+    pension_annual: Decimal = Decimal("0")  # pension_monthly × 12
+    withdrawal_annual: Decimal = Decimal("0")  # amount withdrawn from savings this year
+
     # Net
-    total_income: Decimal = Decimal("0")  # gross + project_income + caf + tax_credits
+    total_income: Decimal = Decimal("0")  # gross + project_income + caf + tax_credits + pension
     total_outgoing: Decimal = Decimal("0")  # charges + cfe + all expense categories
     net_annual: Decimal = Decimal("0")  # total_income - total_outgoing + status_bonus
 
@@ -141,7 +158,7 @@ class YearProjection:
 
     # Derived
     passive_monthly: Decimal = Decimal("0")  # total_wealth × 4% / 12
-    total_monthly_income: Decimal = Decimal("0")  # (gross + project_income + caf) / 12 + passive
+    total_monthly_income: Decimal = Decimal("0")  # (gross + project_income + caf + pension) / 12 + passive
     goal_reached: bool = False
 
 
@@ -151,20 +168,20 @@ class YearProjection:
 
 
 def project_timeline(inp: ProjectionInput) -> list[YearProjection]:
-    """Compute a year-by-year projection from current_age to target_age.
+    """Compute a year-by-year projection from current_age through retirement.
 
-    Walks every year, compounding investments, aging life entities,
-    inflating expenses, applying tax credits, estimating CAF, and
-    checking goal attainment.
+    Phase 1 (accumulation): current_age → target_age.
+    Phase 2 (post-retirement): target_age → target_age + post_retirement_years.
+
+    In Phase 2, work income drops to zero, expenses continue (inflation-adjusted),
+    pension income begins, and savings are drawn down to cover the shortfall.
 
     Args:
         inp: A fully assembled ProjectionInput dataclass.
 
     Returns:
-        List of YearProjection, one per year from current_age to target_age
-        exclusive (e.g., age 40→70 = 30 entries for ages 40 through 69).
-        The final year projection's wealth and passive income represent
-        the state at retirement.
+        List of YearProjection, one per year from current_age through
+        retirement phase (up to age 95 max).
 
     Raises:
         ValueError: If scale is not one of the known inflation scales.
@@ -176,7 +193,6 @@ def project_timeline(inp: ProjectionInput) -> list[YearProjection]:
             f"target_age ({inp.target_age})"
         )
 
-    years = inp.target_age - inp.current_age
     scale_config = INFLATION_SCALES.get(inp.scale)
     if scale_config is None:
         raise ValueError(
@@ -194,217 +210,590 @@ def project_timeline(inp: ProjectionInput) -> list[YearProjection]:
 
     timeline: list[YearProjection] = []
 
-    for y in range(years):
-        year = inp.current_year + y
-        age = inp.current_age + y
-        infl = (Decimal("1") + inflation_rate) ** y
-        cost_factor = (Decimal("1") + cost_living_rate) ** y
+    # ──────────────────────────────────────────────────────────────────────
+    # Phase 1: Accumulation (working years)
+    # ──────────────────────────────────────────────────────────────────────
+    accumulation_years = inp.target_age - inp.current_age
+    post_retirement_years = min(
+        inp.post_retirement_years,
+        _AGE_CAP - inp.target_age,
+    )
 
-        # ── Revenue ──────────────────────────────────────────────────
-        gross = inp.monthly_gross * Decimal("12") * (
-            (Decimal("1") + inp.growth_rate) ** y
+    for y in range(accumulation_years):
+        entry = _compute_accumulation_year(
+            inp=inp,
+            y=y,
+            infl_rate=inflation_rate,
+            cost_living_rate=cost_living_rate,
+            balances=balances,
         )
-        ae_rate = get_ae_rate(inp.ae_activity_type, year)
-        charges = gross * ae_rate
-        cfe = get_cfe_estimate(year, inflation_rate)
+        timeline.append(entry)
 
-        # ── Status change ────────────────────────────────────────────
-        status_bonus = Decimal("0")
-        if (
-            inp.status_change_enabled
-            and inp.status_change_year is not None
-            and year >= inp.status_change_year
-        ):
-            status_bonus = inp.status_change_savings or Decimal("0")
+    # ──────────────────────────────────────────────────────────────────────
+    # Phase 2: Post-retirement (drawdown years)
+    # ──────────────────────────────────────────────────────────────────────
+    for y in range(post_retirement_years):
+        entry = _compute_retirement_year(
+            inp=inp,
+            y=accumulation_years + y,
+            infl_rate=inflation_rate,
+            cost_living_rate=cost_living_rate,
+            balances=balances,
+        )
+        timeline.append(entry)
 
-        # ── Base expenses ────────────────────────────────────────────
-        base_exp = inp.monthly_expenses_total * Decimal("12") * cost_factor
+        # Stop early if wealth is exhausted (cannot draw more)
+        if entry.total_wealth <= 0:
+            break
 
-        # ── Life entity expenses ─────────────────────────────────────
-        kid_exp = pet_exp = car_exp = tech_exp = Decimal("0")
-        for entity in inp.life_entities:
-            entity_age = entity.get("entity_age_at_start", 0) + y
-            entity_type = entity.get("entity_type", "")
-            for evt in entity.get("cost_events", []):
-                if not evt.get("is_active", True):
-                    continue
-                from_age = int(evt.get("from_age", 0))
-                to_age = int(evt.get("to_age", 0))
-                if entity_age < from_age or entity_age > to_age:
-                    continue
-                amount = Decimal(str(evt.get("amount", 0))) * infl
-                frequency = evt.get("frequency", "monthly")
-                if frequency == "monthly":
-                    amount *= Decimal("12")
-                elif frequency == "annual":
-                    pass  # amount stays annual
-                elif frequency == "once":
-                    # Only fire in the exact year the entity hits from_age
-                    if entity_age != from_age:
-                        continue
-                # Route to the right bucket
-                if entity_type == "kid":
-                    kid_exp += amount
-                elif entity_type == "pet":
-                    pet_exp += amount
-                elif entity_type == "car":
-                    car_exp += amount
-                elif entity_type == "tech":
-                    tech_exp += amount
+    return timeline
 
-        # ── Recurring expenses ───────────────────────────────────────
-        rec_exp = Decimal("0")
-        for r in inp.recurring_expenses:
-            from_year = int(r.get("from_year", 0))
-            to_year = int(r.get("to_year", 0))
-            if from_year <= year <= to_year:
-                rec_exp += Decimal(str(r.get("annual_amount", 0))) * infl
 
-        # ── Projects ─────────────────────────────────────────────────
-        proj_exp = Decimal("0")
-        proj_inc = Decimal("0")
-        for p in inp.projects:
-            ptype = p.get("type", "")
-            if ptype == "invest":
-                start_year = p.get("start_year")
-                if start_year is None or year < int(start_year):
-                    continue
-                if year == int(start_year):
-                    proj_exp += Decimal(str(p.get("purchase_cost", 0)))
-                owned = year - int(start_year)
-                if owned > 0:
-                    inc = Decimal(str(p.get("annual_income", 0))) * (
-                        (Decimal("1.02")) ** owned
-                    )
-                    exp = Decimal(str(p.get("annual_expenses", 0))) * infl
-                    tax_rate = Decimal(str(p.get("tax_rate", "0.30")))
-                    taxable = max(Decimal("0"), inc - exp)
-                    tax = taxable * tax_rate
-                    proj_inc += inc
-                    proj_exp += exp + tax
-            elif ptype == "event":
-                event_year = p.get("event_year")
-                if event_year is not None and year == int(event_year):
-                    proj_exp += Decimal(str(p.get("event_cost", 0)))
+# ├─────────────────────────────────────────────────────────────────────────────
+# │ Phase 1: Accumulation year computation
+# ├─────────────────────────────────────────────────────────────────────────────
 
-        # ── CAF ──────────────────────────────────────────────────────
-        if inp.caf_override_monthly is not None:
-            # Override: revalorise at 1.5%/year (same as CAF's internal rate)
-            kids_under_20 = _count_kids_under(inp.kids_birth_dates, year, 20)
-            if kids_under_20 > 0:
-                caf = inp.caf_override_monthly * Decimal("12") * (
-                    (Decimal("1.015")) ** y
-                )
-            else:
-                caf = Decimal("0")
+
+def _compute_accumulation_year(
+    inp: ProjectionInput,
+    y: int,
+    infl_rate: Decimal,
+    cost_living_rate: Decimal,
+    balances: dict[str, Decimal],
+) -> YearProjection:
+    """Compute a single year in the accumulation (working) phase.
+
+    Same logic as Sprint 4 projection engine, refactored into a helper
+    so the post-retirement phase can reuse expense/investment computation.
+    """
+    year = inp.current_year + y
+    age = inp.current_age + y
+    infl = (Decimal("1") + infl_rate) ** y
+    cost_factor = (Decimal("1") + cost_living_rate) ** y
+
+    # ── Revenue ──────────────────────────────────────────────────────
+    gross = inp.monthly_gross * Decimal("12") * (
+        (Decimal("1") + inp.growth_rate) ** y
+    )
+    ae_rate = get_ae_rate(inp.ae_activity_type, year)
+    charges = gross * ae_rate
+    cfe = get_cfe_estimate(year, infl_rate)
+
+    # ── Status change ────────────────────────────────────────────────
+    status_bonus = Decimal("0")
+    if (
+        inp.status_change_enabled
+        and inp.status_change_year is not None
+        and year >= inp.status_change_year
+    ):
+        status_bonus = inp.status_change_savings or Decimal("0")
+
+    # ── Expenses ─────────────────────────────────────────────────────
+    base_exp, kid_exp, pet_exp, car_exp, tech_exp = _compute_life_entity_expenses(
+        inp, y, infl
+    )
+    base_exp += inp.monthly_expenses_total * Decimal("12") * cost_factor
+
+    # Recurring expenses
+    rec_exp = _compute_recurring_expenses(inp, year, infl)
+
+    # Projects
+    proj_exp, proj_inc = _compute_project_cashflow(inp, year, infl)
+
+    # ── CAF / Tax credits ────────────────────────────────────────────
+    caf = _compute_caf(inp, y, gross, year)
+    tax_credits = _compute_tax_credits(inp, infl)
+    pension = Decimal("0")  # no pension during working years
+
+    # ── Net ──────────────────────────────────────────────────────────
+    total_income = gross + proj_inc + caf + tax_credits
+    total_outgoing = (
+        charges + cfe + base_exp + kid_exp + pet_exp
+        + car_exp + tech_exp + rec_exp + proj_exp
+    )
+    net = total_income - total_outgoing + status_bonus
+
+    # ── Investments (contributions + returns) ────────────────────────
+    year_invested, year_returns = _compute_investment_growth(
+        inp, balances, infl_rate, infl, y=y
+    )
+
+    wealth = sum(balances.values(), Decimal("0"))
+    passive = wealth * Decimal("0.04") / Decimal("12")
+    total_monthly = (gross + proj_inc + caf) / Decimal("12") + passive
+
+    # Retirement-relevant monthly income excludes work salary and CAF
+    # (both drop to zero at retirement). The goal is "à la retraite."
+    retirement_monthly_income = passive + (proj_inc + pension) / Decimal("12")
+
+    return YearProjection(
+        year=year,
+        age=age,
+        is_retirement=False,
+        gross_annual=gross.quantize(Decimal("0.01")),
+        ae_rate=ae_rate,
+        charges=charges.quantize(Decimal("0.01")),
+        cfe=cfe.quantize(Decimal("0.01")),
+        base_expenses=base_exp.quantize(Decimal("0.01")),
+        kid_expenses=kid_exp.quantize(Decimal("0.01")),
+        pet_expenses=pet_exp.quantize(Decimal("0.01")),
+        car_expenses=car_exp.quantize(Decimal("0.01")),
+        tech_expenses=tech_exp.quantize(Decimal("0.01")),
+        recurring_expenses=rec_exp.quantize(Decimal("0.01")),
+        project_expenses=proj_exp.quantize(Decimal("0.01")),
+        project_income=proj_inc.quantize(Decimal("0.01")),
+        caf_annual=caf.quantize(Decimal("0.01")),
+        tax_credits=tax_credits.quantize(Decimal("0.01")),
+        status_bonus=status_bonus.quantize(Decimal("0.01")),
+        pension_monthly=Decimal("0"),
+        pension_annual=Decimal("0"),
+        withdrawal_annual=Decimal("0"),
+        total_income=total_income.quantize(Decimal("0.01")),
+        total_outgoing=total_outgoing.quantize(Decimal("0.01")),
+        net_annual=net.quantize(Decimal("0.01")),
+        year_invested=year_invested.quantize(Decimal("0.01")),
+        year_returns=year_returns.quantize(Decimal("0.01")),
+        total_wealth=wealth.quantize(Decimal("0.01")),
+        passive_monthly=passive.quantize(Decimal("0.01")),
+        total_monthly_income=total_monthly.quantize(Decimal("0.01")),
+        goal_reached=bool(
+            inp.monthly_revenue_goal is not None
+            and inp.monthly_revenue_goal > 0
+            and retirement_monthly_income >= inp.monthly_revenue_goal
+        ),
+    )
+
+
+# ├─────────────────────────────────────────────────────────────────────────────
+# │ Phase 2: Post-retirement year computation
+# ├─────────────────────────────────────────────────────────────────────────────
+
+
+def _compute_retirement_year(
+    inp: ProjectionInput,
+    y: int,
+    infl_rate: Decimal,
+    cost_living_rate: Decimal,
+    balances: dict[str, Decimal],
+) -> YearProjection:
+    """Compute a single year in the post-retirement (drawdown) phase.
+
+    Work income = 0. Pension begins. Expenses continue with inflation.
+    If expenses > income from pension + project income, withdraw the
+    shortfall from savings (liquid accounts first).
+    """
+    year = inp.current_year + y
+    age = inp.current_age + y
+    infl = (Decimal("1") + infl_rate) ** y
+    cost_factor = (Decimal("1") + cost_living_rate) ** y
+
+    # ── No work income ───────────────────────────────────────────────
+    gross = Decimal("0")
+    charges = Decimal("0")
+    cfe = Decimal("0")
+    status_bonus = Decimal("0")
+
+    # ── Pension income ───────────────────────────────────────────────
+    pension_monthly = inp.pension_monthly
+    pension_annual = pension_monthly * Decimal("12")
+
+    # ── Expenses (same structure as accumulation, minus work-related) ─
+    base_exp, kid_exp, pet_exp, car_exp, tech_exp = _compute_life_entity_expenses(
+        inp, y, infl
+    )
+    base_exp += inp.monthly_expenses_total * Decimal("12") * cost_factor
+
+    rec_exp = _compute_recurring_expenses(inp, year, infl)
+    proj_exp, proj_inc = _compute_project_cashflow(inp, year, infl)
+
+    caf = Decimal("0")  # no CAF after retirement
+    tax_credits = Decimal("0")  # no CESU/charity credits after retirement
+
+    # ── Income vs expenses ──────────────────────────────────────────
+    total_income = proj_inc + pension_annual
+    total_outgoing = (
+        base_exp + kid_exp + pet_exp + car_exp
+        + tech_exp + rec_exp + proj_exp
+    )
+
+    # ── Compound remaining investments (no new contributions) ────────
+    year_invested = Decimal("0")
+    year_returns = Decimal("0")
+    for vk in list(balances.keys()):
+        if vk not in VEHICLE_SPECS:
+            continue
+        spec = VEHICLE_SPECS[vk]
+        bal = balances.get(vk, Decimal("0"))
+        eff_rate = max(
+            Decimal("0.005"),
+            spec["rate"] - infl_rate * Decimal("0.25"),
+        )
+        returns = bal * eff_rate
+        if spec.get("tax_free", False):
+            net_ret = returns
         else:
-            caf_monthly = estimate_monthly_caf(
-                kids_birth_dates=inp.kids_birth_dates,
-                reference_year=year,
-                annual_household_income=(
-                    inp.household_income_for_caf
-                    if inp.household_income_for_caf > 0
-                    else gross
-                ),
+            net_ret = returns * (
+                Decimal("1") - Decimal(str(spec.get("tax_rate", 0)))
             )
-            caf = caf_monthly * Decimal("12")
+        balances[vk] = bal + net_ret  # no contributions, only returns
+        year_returns += net_ret
 
-        # ── Tax credits ──────────────────────────────────────────────
-        cesu_credit = min(
-            inp.cesu_annual * infl * Decimal("0.5"), Decimal("6000")
-        )
-        charity_credit = min(
-            inp.charity_annual * infl * Decimal("0.66"), Decimal("20000")
-        )
-        tax_credits = cesu_credit + charity_credit
+    wealth_before_withdrawal = sum(balances.values(), Decimal("0"))
 
-        # ── Net ──────────────────────────────────────────────────────
-        total_income = gross + proj_inc + caf + tax_credits
-        total_outgoing = (
-            charges
-            + cfe
-            + base_exp
-            + kid_exp
-            + pet_exp
-            + car_exp
-            + tech_exp
-            + rec_exp
-            + proj_exp
-        )
-        net = total_income - total_outgoing + status_bonus
+    # ── Withdrawal to cover shortfall ────────────────────────────────
+    shortfall = total_outgoing - total_income
+    withdrawal = Decimal("0")
 
-        # ── Investments ──────────────────────────────────────────────
-        year_invested = Decimal("0")
-        year_returns = Decimal("0")
-        for vk, alloc in inp.allocations.items():
-            monthly = alloc.get("monthly", Decimal("0"))
-            if monthly <= 0:
+    if shortfall > 0:
+        # Draw from savings — bucket priority: liquid first
+        withdrawal = _withdraw_from_savings(balances, shortfall)
+
+    # Total net for the year
+    net = total_income - total_outgoing + withdrawal  # withdrawal fills the gap
+
+    wealth = sum(balances.values(), Decimal("0"))
+    passive = max(Decimal("0"), wealth * Decimal("0.04") / Decimal("12"))
+    total_monthly = (proj_inc + pension_annual) / Decimal("12") + passive
+
+    return YearProjection(
+        year=year,
+        age=age,
+        is_retirement=True,
+        gross_annual=Decimal("0"),
+        ae_rate=Decimal("0"),
+        charges=Decimal("0"),
+        cfe=Decimal("0"),
+        base_expenses=base_exp.quantize(Decimal("0.01")),
+        kid_expenses=kid_exp.quantize(Decimal("0.01")),
+        pet_expenses=pet_exp.quantize(Decimal("0.01")),
+        car_expenses=car_exp.quantize(Decimal("0.01")),
+        tech_expenses=tech_exp.quantize(Decimal("0.01")),
+        recurring_expenses=rec_exp.quantize(Decimal("0.01")),
+        project_expenses=proj_exp.quantize(Decimal("0.01")),
+        project_income=proj_inc.quantize(Decimal("0.01")),
+        caf_annual=Decimal("0"),
+        tax_credits=Decimal("0"),
+        status_bonus=Decimal("0"),
+        pension_monthly=pension_monthly.quantize(Decimal("0.01")),
+        pension_annual=pension_annual.quantize(Decimal("0.01")),
+        withdrawal_annual=withdrawal.quantize(Decimal("0.01")),
+        total_income=total_income.quantize(Decimal("0.01")),
+        total_outgoing=total_outgoing.quantize(Decimal("0.01")),
+        net_annual=net.quantize(Decimal("0.01")),
+        year_invested=Decimal("0"),
+        year_returns=year_returns.quantize(Decimal("0.01")),
+        total_wealth=wealth.quantize(Decimal("0.01")),
+        passive_monthly=passive.quantize(Decimal("0.01")),
+        total_monthly_income=total_monthly.quantize(Decimal("0.01")),
+        goal_reached=False,
+    )
+
+
+# ├─────────────────────────────────────────────────────────────────────────────
+# │ Withdrawal engine
+# ├─────────────────────────────────────────────────────────────────────────────
+
+
+def _withdraw_from_savings(
+    balances: dict[str, Decimal],
+    needed: Decimal,
+) -> Decimal:
+    """Withdraw from savings using bucket priority: liquid accounts first.
+
+    Priority order: Livret A → LDDS → AV euro → AV UC → PEA → SCPI → PER.
+    PER is unlocked at retirement (included in drawdown pool).
+
+    Args:
+        balances: Current balances dict (mutated in place).
+        needed: Total amount to withdraw.
+
+    Returns:
+        The amount actually withdrawn (may be less than needed if wealth is exhausted).
+    """
+    # Withdrawal priority: liquid → less liquid
+    priority = [
+        "livret_a",
+        "ldds",
+        "av_euro",
+        "av_uc",
+        "pea",
+        "scpi",
+        "per",
+    ]
+
+    withdrawn = Decimal("0")
+    remaining = needed
+
+    for vk in priority:
+        if remaining <= 0:
+            break
+        bal = balances.get(vk, Decimal("0"))
+        if bal <= 0:
+            continue
+        take = min(bal, remaining)
+        balances[vk] = bal - take
+        withdrawn += take
+        remaining -= take
+
+    return withdrawn
+
+
+# ├─────────────────────────────────────────────────────────────────────────────
+# │ Expense sub-computations (shared between phases)
+# ├─────────────────────────────────────────────────────────────────────────────
+
+
+def _compute_life_entity_expenses(
+    inp: ProjectionInput,
+    y: int,
+    infl: Decimal,
+) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal]:
+    """Compute expenses from life entities (kids, pets, cars, tech).
+
+    Returns:
+        Tuple of (base_exp_additional, kid_exp, pet_exp, car_exp, tech_exp).
+        base_exp_additional is always 0 (handled separately).
+    """
+    kid_exp = pet_exp = car_exp = tech_exp = Decimal("0")
+    for entity in inp.life_entities:
+        entity_age = entity.get("entity_age_at_start", 0) + y
+        entity_type = entity.get("entity_type", "")
+        for evt in entity.get("cost_events", []):
+            if not evt.get("is_active", True):
                 continue
-            spec = VEHICLE_SPECS.get(vk)
-            if not spec:
+            from_age = int(evt.get("from_age", 0))
+            to_age = int(evt.get("to_age", 0))
+            if entity_age < from_age or entity_age > to_age:
                 continue
-            bal = balances.get(vk, Decimal("0"))
-            contrib = monthly * Decimal("12")
-            # Effective real return: rate minus 25% of inflation, floor at 0.5%
+            amount = Decimal(str(evt.get("amount", 0))) * infl
+            frequency = evt.get("frequency", "monthly")
+            if frequency == "monthly":
+                amount *= Decimal("12")
+            elif frequency == "annual":
+                pass
+            elif frequency == "once":
+                if entity_age != from_age:
+                    continue
+            if entity_type == "kid":
+                kid_exp += amount
+            elif entity_type == "pet":
+                pet_exp += amount
+            elif entity_type == "car":
+                car_exp += amount
+            elif entity_type == "tech":
+                tech_exp += amount
+    return Decimal("0"), kid_exp, pet_exp, car_exp, tech_exp
+
+
+def _compute_recurring_expenses(
+    inp: ProjectionInput,
+    year: int,
+    infl: Decimal,
+) -> Decimal:
+    """Compute recurring expenses active in the given year."""
+    rec_exp = Decimal("0")
+    for r in inp.recurring_expenses:
+        from_year = int(r.get("from_year", 0))
+        to_year = int(r.get("to_year", 0))
+        if from_year <= year <= to_year:
+            rec_exp += Decimal(str(r.get("annual_amount", 0))) * infl
+    return rec_exp
+
+
+def _compute_project_cashflow(
+    inp: ProjectionInput,
+    year: int,
+    infl: Decimal,
+) -> tuple[Decimal, Decimal]:
+    """Compute project expenses and income for the given year.
+
+    Returns:
+        Tuple of (project_expenses, project_income).
+    """
+    proj_exp = Decimal("0")
+    proj_inc = Decimal("0")
+    for p in inp.projects:
+        ptype = p.get("type", "")
+        if ptype == "invest":
+            start_year = p.get("start_year")
+            if start_year is None or year < int(start_year):
+                continue
+            if year == int(start_year):
+                proj_exp += Decimal(str(p.get("purchase_cost", 0)))
+            owned = year - int(start_year)
+            if owned > 0:
+                inc = Decimal(str(p.get("annual_income", 0))) * (
+                    (Decimal("1.02")) ** owned
+                )
+                exp = Decimal(str(p.get("annual_expenses", 0))) * infl
+                tax_rate = Decimal(str(p.get("tax_rate", "0.30")))
+                taxable = max(Decimal("0"), inc - exp)
+                tax = taxable * tax_rate
+                proj_inc += inc
+                proj_exp += exp + tax
+        elif ptype == "event":
+            event_year = p.get("event_year")
+            if event_year is not None and year == int(event_year):
+                proj_exp += Decimal(str(p.get("event_cost", 0)))
+    return proj_exp, proj_inc
+
+
+def _compute_caf(
+    inp: ProjectionInput,
+    y: int,
+    gross: Decimal,
+    year: int,
+) -> Decimal:
+    """Compute CAF (family allowance) for the given year."""
+    if inp.caf_override_monthly is not None:
+        kids_under_20 = _count_kids_under(inp.kids_birth_dates, year, 20)
+        if kids_under_20 > 0:
+            return inp.caf_override_monthly * Decimal("12") * (
+                (Decimal("1.015")) ** y
+            )
+        return Decimal("0")
+
+    caf_monthly = estimate_monthly_caf(
+        kids_birth_dates=inp.kids_birth_dates,
+        reference_year=year,
+        annual_household_income=(
+            inp.household_income_for_caf
+            if inp.household_income_for_caf > 0
+            else gross
+        ),
+    )
+    return caf_monthly * Decimal("12")
+
+
+def _compute_tax_credits(inp: ProjectionInput, infl: Decimal) -> Decimal:
+    """Compute CESU and charity tax credits."""
+    cesu_credit = min(
+        inp.cesu_annual * infl * Decimal("0.5"), Decimal("6000")
+    )
+    charity_credit = min(
+        inp.charity_annual * infl * Decimal("0.66"), Decimal("20000")
+    )
+    return cesu_credit + charity_credit
+
+
+def _compute_investment_growth(
+    inp: ProjectionInput,
+    balances: dict[str, Decimal],
+    inflation_rate: Decimal,
+    infl: Decimal,
+    y: int = 0,
+) -> tuple[Decimal, Decimal]:
+    """Compound investments for one year (Sprint 5 refined + 5.10 tax by holding period).
+
+    Refinements:
+    - Regulated vehicles track inflation in optimistic/moderate.
+    - Nominal ceilings (not inflation-adjusted).
+    - Overflow redirect when a vehicle hits its ceiling.
+    - Tax rate differentiates by holding period:
+      * Pre-maturity (PEA < 5yr, AV < 8yr): PFU 30% on gains
+      * Post-maturity: only PS 17.2% on gains
+      * Existing balances assume mature (held long enough).
+
+    Args:
+        inp: Projection input with allocations, scale, etc.
+        balances: Current vehicle balances (mutated in place).
+        inflation_rate: Annual inflation rate for this scale.
+        infl: Cumulative inflation factor (unused, kept for signature compatibility).
+        y: Year index in projection (0 = first year). Used to determine holding period.
+
+    Returns:
+        Tuple of (year_invested, year_returns).
+    """
+    year_invested = Decimal("0")
+    year_returns = Decimal("0")
+    overflow: dict[str, Decimal] = {}  # overflow to be applied after loop
+
+    for vk, alloc in inp.allocations.items():
+        monthly = alloc.get("monthly", Decimal("0"))
+        if monthly <= 0:
+            continue
+        spec = VEHICLE_SPECS.get(vk)
+        if not spec:
+            continue
+        bal = balances.get(vk, Decimal("0"))
+        has_existing = bal > Decimal("0")  # non-zero starting balance
+        contrib = monthly * Decimal("12")
+
+        # Regulated vehicles: rate tracks inflation in non-pessimistic scales
+        if spec.get("regulated", False):
+            if inp.scale == "pessimistic":
+                eff_rate = spec["rate"]
+            else:
+                eff_rate = max(spec["rate"], inflation_rate)
+        else:
+            # Market-based returns: nominal rate minus 25% of inflation
             eff_rate = max(
                 Decimal("0.005"),
                 spec["rate"] - inflation_rate * Decimal("0.25"),
             )
-            returns = bal * eff_rate
-            if spec.get("tax_free", False):
-                net_ret = returns
+
+        returns = bal * eff_rate
+
+        # ── Tax treatment by holding period (TASK-5.10) ────────────
+        if spec.get("tax_free", False):
+            net_ret = returns
+        else:
+            # Determine tax rate based on vehicle maturity rules
+            tax_rate = Decimal(str(spec.get("tax_rate", Decimal("0.172"))))
+            # PFU (30%) = 17.2% PS + 12.8% IR; PS only (17.2%) after maturity
+            PFU = Decimal("0.300")
+            PS_ONLY = Decimal("0.172")
+
+            if vk == "pea":
+                # PEA: after 5 years, only PS on gains. Pre-maturity: PFU.
+                # existing balance implies already mature
+                if has_existing or y >= 5:
+                    tax_rate = PS_ONLY
+                else:
+                    tax_rate = PFU
+            elif vk in ("av_euro", "av_uc"):
+                # AV: after 8 years, PS on gains (with 4600€ abattement).
+                # Pre-maturity: PFU (30%). Existing balance implies mature.
+                if has_existing or y >= 8:
+                    tax_rate = PS_ONLY
+                else:
+                    tax_rate = PFU
+            elif vk == "scpi":
+                # SCPI: always PFU (real estate income taxed at full rate)
+                tax_rate = PFU
+            elif vk == "per":
+                # PER: contributions were tax-deductible; exit taxed as income.
+                # Blended estimate: ~20% on gains at withdrawal.
+                tax_rate = Decimal("0.200")
             else:
-                net_ret = returns * (
-                    Decimal("1") - Decimal(str(spec.get("tax_rate", 0)))
-                )
-            ceiling = spec.get("ceiling")
-            new_bal = bal + contrib + net_ret
-            if ceiling is not None:
-                new_bal = min(new_bal, ceiling * infl)
-            balances[vk] = new_bal
-            year_invested += contrib
-            year_returns += net_ret
+                # Default: use the spec's tax_rate (already PS_ONLY in most cases)
+                tax_rate = Decimal(str(spec.get("tax_rate", tax_rate)))
 
-        wealth = sum(balances.values(), Decimal("0"))
-        passive = wealth * Decimal("0.04") / Decimal("12")
-        total_monthly = (gross + proj_inc + caf) / Decimal("12") + passive
+            net_ret = returns * (Decimal("1") - tax_rate)
 
-        timeline.append(
-            YearProjection(
-                year=year,
-                age=age,
-                gross_annual=gross.quantize(Decimal("0.01")),
-                ae_rate=ae_rate,
-                charges=charges.quantize(Decimal("0.01")),
-                cfe=cfe.quantize(Decimal("0.01")),
-                base_expenses=base_exp.quantize(Decimal("0.01")),
-                kid_expenses=kid_exp.quantize(Decimal("0.01")),
-                pet_expenses=pet_exp.quantize(Decimal("0.01")),
-                car_expenses=car_exp.quantize(Decimal("0.01")),
-                tech_expenses=tech_exp.quantize(Decimal("0.01")),
-                recurring_expenses=rec_exp.quantize(Decimal("0.01")),
-                project_expenses=proj_exp.quantize(Decimal("0.01")),
-                project_income=proj_inc.quantize(Decimal("0.01")),
-                caf_annual=caf.quantize(Decimal("0.01")),
-                tax_credits=tax_credits.quantize(Decimal("0.01")),
-                status_bonus=status_bonus.quantize(Decimal("0.01")),
-                total_income=total_income.quantize(Decimal("0.01")),
-                total_outgoing=total_outgoing.quantize(Decimal("0.01")),
-                net_annual=net.quantize(Decimal("0.01")),
-                year_invested=year_invested.quantize(Decimal("0.01")),
-                year_returns=year_returns.quantize(Decimal("0.01")),
-                total_wealth=wealth.quantize(Decimal("0.01")),
-                passive_monthly=passive.quantize(Decimal("0.01")),
-                total_monthly_income=total_monthly.quantize(Decimal("0.01")),
-                goal_reached=bool(
-                    inp.monthly_revenue_goal is not None
-                    and inp.monthly_revenue_goal > 0
-                    and total_monthly >= inp.monthly_revenue_goal
-                ),
-            )
-        )
+        ceiling = spec.get("ceiling")
+        new_bal = bal + contrib + net_ret
 
-    return timeline
+        if ceiling is not None:
+            # Nominal ceiling (not inflation-adjusted) for regulated vehicles
+            if new_bal > ceiling:
+                overflow_vk = spec.get("overflow_target")
+                if overflow_vk and overflow_vk in VEHICLE_SPECS:
+                    over = new_bal - ceiling
+                    overflow[overflow_vk] = overflow.get(overflow_vk, Decimal("0")) + over
+                    new_bal = ceiling
+                else:
+                    new_bal = ceiling  # cap without overflow
+
+        balances[vk] = new_bal
+        year_invested += contrib
+        year_returns += net_ret
+
+    # Apply overflow amounts to target vehicles
+    for target_vk, amount in overflow.items():
+        balances[target_vk] = balances.get(target_vk, Decimal("0")) + amount
+
+    return year_invested, year_returns
 
 
 # ├─────────────────────────────────────────────────────────────────────────────
@@ -443,15 +832,37 @@ def compute_milestones(timeline: list[YearProjection]) -> list[dict[str, Any]]:
 def find_goal_year(timeline: list[YearProjection]) -> dict[str, int] | None:
     """Find the first year where the monthly income goal is reached.
 
+    Only checks accumulation-phase years (is_retirement=False).
+
     Args:
         timeline: Full projection timeline from project_timeline().
 
     Returns:
         {"year": int, "age": int} if goal is reached, None otherwise.
     """
-    hit = next((t for t in timeline if t.goal_reached), None)
+    hit = next(
+        (t for t in timeline if t.goal_reached and not t.is_retirement),
+        None,
+    )
     if hit:
         return {"year": hit.year, "age": hit.age}
+    return None
+
+
+def find_wealth_exhaustion_age(
+    timeline: list[YearProjection],
+) -> int | None:
+    """Find the age at which total wealth first hits zero or below.
+
+    Args:
+        timeline: Full projection timeline.
+
+    Returns:
+        Age at wealth exhaustion, or None if wealth never hits zero in the timeline.
+    """
+    for t in timeline:
+        if t.total_wealth <= 0 and t.is_retirement:
+            return t.age
     return None
 
 
@@ -459,6 +870,9 @@ def compute_summary(
     timeline: list[YearProjection],
 ) -> dict[str, Any]:
     """Compute summary statistics from a full projection timeline.
+
+    Extended in Sprint 5 with post-retirement fields:
+    wealth_exhaustion_age, retirement_monthly_income, retirement_monthly_gap.
 
     Args:
         timeline: Full projection timeline from project_timeline().
@@ -472,6 +886,9 @@ def compute_summary(
           - total_returns: sum of all investment returns
           - goal_year: {"year", "age"} or None
           - milestones: list of milestone dicts
+          - wealth_exhaustion_age: age when wealth hits zero, or None
+          - retirement_monthly_income: income at retirement start
+          - retirement_monthly_gap: gap between income and expenses at retirement
     """
     if not timeline:
         return {
@@ -482,11 +899,30 @@ def compute_summary(
             "total_returns": "0.00",
             "goal_year": None,
             "milestones": [],
+            "wealth_exhaustion_age": None,
+            "retirement_monthly_income": "0.00",
+            "retirement_monthly_gap": "0.00",
         }
 
     last = timeline[-1]
     total_invested = sum((t.year_invested for t in timeline), Decimal("0"))
     total_returns = sum((t.year_returns for t in timeline), Decimal("0"))
+
+    # Find first retirement year for income/gap stats
+    retirement_entries = [t for t in timeline if t.is_retirement]
+    retirement_monthly_income = Decimal("0")
+    retirement_monthly_gap = Decimal("0")
+
+    if retirement_entries:
+        first_ret = retirement_entries[0]
+        # Monthly retirement income: (project_income + pension) / 12
+        retirement_monthly_income = (
+            first_ret.project_income + first_ret.pension_annual
+        ) / Decimal("12")
+        # Monthly gap: income - expenses
+        retirement_monthly_gap = (
+            first_ret.total_income - first_ret.total_outgoing
+        ) / Decimal("12")
 
     return {
         "years": len(timeline),
@@ -496,6 +932,13 @@ def compute_summary(
         "total_returns": str(total_returns.quantize(Decimal("0.01"))),
         "goal_year": find_goal_year(timeline),
         "milestones": compute_milestones(timeline),
+        "wealth_exhaustion_age": find_wealth_exhaustion_age(timeline),
+        "retirement_monthly_income": str(
+            retirement_monthly_income.quantize(Decimal("0.01"))
+        ),
+        "retirement_monthly_gap": str(
+            retirement_monthly_gap.quantize(Decimal("0.01"))
+        ),
     }
 
 

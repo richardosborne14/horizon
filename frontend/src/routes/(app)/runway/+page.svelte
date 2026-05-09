@@ -7,6 +7,9 @@
 	import { onMount } from 'svelte';
 	import { projectionStore, projectionLoading } from '$lib/stores/projection';
 	import AreaChart from '$lib/components/runway/AreaChart.svelte';
+	import InsightCards from '$lib/components/runway/InsightCards.svelte';
+	import ReadinessGauge from '$lib/components/runway/ReadinessGauge.svelte';
+	import ScenarioPanel from '$lib/components/runway/ScenarioPanel.svelte';
 	import { fmt, fmtK, fmtPct } from '$lib/utils/format';
 	import type { PageData } from './$types';
 
@@ -106,8 +109,16 @@
 	$: lastYear = projection?.timeline?.[projection.timeline.length - 1];
 	$: firstYear = projection?.timeline?.[0];
 
-	$: wealthChartData = (projection?.timeline || []).map((t: any) => ({ value: parseFloat(t.total_wealth || '0') }));
-	$: incomeChartData = (projection?.timeline || []).map((t: any) => ({ value: parseFloat(t.total_monthly_income || '0') }));
+	// Sprint 5: Post-retirement summary fields
+	$: wealthExhaustionAge = projection?.summary?.wealth_exhaustion_age ?? null;
+	$: retirementMonthlyIncome = projection?.summary?.retirement_monthly_income || '0';
+	$: retirementMonthlyGap = projection?.summary?.retirement_monthly_gap || '0';
+	$: hasRetirementPhase = (projection?.timeline || []).some((t: any) => t.is_retirement);
+
+	$: timeline = projection?.timeline || [];
+	$: retirementIndex = timeline.findIndex((t: any) => t.is_retirement);
+	$: wealthChartData = timeline.map((t: any) => ({ value: parseFloat(t.total_wealth || '0'), isRetirement: t.is_retirement, year: t.year, age: t.age }));
+	$: incomeChartData = timeline.map((t: any) => ({ value: parseFloat(t.total_monthly_income || '0'), isRetirement: t.is_retirement, year: t.year, age: t.age }));
 	$: goalLineValue = goalValue ? parseFloat(goalValue) : null;
 
 	// ── Milestones ─────────────────────────────────────────────────────
@@ -115,6 +126,7 @@
 	const milestoneColors: Record<string, string> = { '100k€': '#22d3ee', '250k€': '#a78bfa', '500k€': '#f59e0b', '1M€': '#10b981' };
 
 	// ── Table data ────────────────────────────────────────────
+	$: readiness = projection?.readiness || null;
 	$: filteredTimeline = filterTimeline(projection?.timeline || []);
 	function filterTimeline(timeline: any[]): any[] {
 		if (!timeline.length) return [];
@@ -128,6 +140,78 @@
 		if (!hasGoal) return 'nogoal';
 		if (proj.summary.goal_year) return 'reached';
 		return 'gap';
+	}
+
+	// ── Scenario comparison (TASK-5.7) ────────────────────────────────
+	let scenarioOpen = false;
+	let scenarioLoading = false;
+	let scenarioResult: any = null;
+	let scenarioPanel: ScenarioPanel;
+
+	function openScenario() {
+		scenarioOpen = true;
+		const totalSavings = profile?.allocations
+			? profile.allocations.reduce((sum: number, a: any) => sum + (a.monthly_contribution || 0), 0)
+			: 0;
+		if (scenarioPanel) {
+			scenarioPanel.initFromProfile(profile, totalSavings);
+		}
+	}
+
+	async function handleCompare(e: CustomEvent) {
+		scenarioLoading = true;
+		try {
+			const res = await fetch('/api/projection/compare', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					base_scale: currentScale,
+					overrides: e.detail.overrides,
+				}),
+			});
+			if (res.ok) {
+				scenarioResult = await res.json();
+			}
+		} catch (err) {
+			console.error('Scenario compare failed:', err);
+		} finally {
+			scenarioLoading = false;
+		}
+	}
+
+	function handleScenarioReset() {
+		scenarioResult = null;
+	}
+
+	async function handleScenarioApply() {
+		if (!scenarioResult?.scenario?.summary) return;
+		projectionStore.set(scenarioResult.scenario);
+		scenarioOpen = false;
+		scenarioResult = null;
+	}
+
+	// ── PDF Export (TASK-5.9) ─────────────────────────────────────────
+	let exportLoading = false;
+
+	async function exportPdf() {
+		exportLoading = true;
+		try {
+			const res = await fetch(`/api/projection/export?scale=${currentScale}`);
+			if (!res.ok) throw new Error('Export failed');
+			const blob = await res.blob();
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `horizon-projection-${new Date().toISOString().slice(0, 10)}.pdf`;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+		} catch (err) {
+			console.error('PDF export failed:', err);
+		} finally {
+			exportLoading = false;
+		}
 	}
 </script>
 
@@ -162,12 +246,20 @@
 			<p class="text-sm text-zinc-500">Chargement de la projection...</p>
 		</div>
 	{:else}
-		<!-- ── Scale selector ─────────────────────────────────────────────── -->
+		<!-- ── Scale selector + Export + Scenario ──────────────────────── -->
 		<div class="flex gap-2">
 			{#each SCALES as s}
 				<button class="flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all border {currentScale === s.key ? 'border-zinc-600 bg-zinc-800 text-white' : 'border-zinc-800/40 bg-zinc-900/30 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/20'}"
 					on:click={() => changeScale(s.key)}>{s.label}</button>
 			{/each}
+			<button on:click={openScenario}
+				class="px-2.5 py-2 rounded-lg text-xs font-medium border border-zinc-800/40 bg-zinc-900/30 text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/20 transition-all"
+				title="Tester des scénarios (Et si...?)"
+			>🔮</button>
+			<button on:click={exportPdf} disabled={exportLoading}
+				class="px-2.5 py-2 rounded-lg text-xs font-medium border border-zinc-800/40 bg-zinc-900/30 text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/20 transition-all disabled:opacity-30"
+				title="Exporter en PDF"
+			>{exportLoading ? '⏳' : '📄'}</button>
 		</div>
 
 		<!-- ── Goal input card ────────────────────────────────────────────── -->
@@ -194,14 +286,42 @@
 				<p class="text-2xl font-bold text-emerald-400 font-mono">{fmt(finalPassive)}</p>
 				<p class="text-[9px] text-emerald-600/50 mt-0.5">Règle des 4%</p>
 			</div>
+			<!-- Sprint 5: Post-retirement — wealth exhaustion or income gap -->
+			{#if hasRetirementPhase && wealthExhaustionAge != null}
+				<div class="bg-rose-950/10 border border-rose-900/20 rounded-xl p-4 col-span-2">
+					<p class="text-[9px] text-zinc-500 uppercase tracking-wider mb-1">Épuisement du patrimoine</p>
+					<p class="text-2xl font-bold text-rose-400 font-mono">À {wealthExhaustionAge} ans</p>
+					<p class="text-[9px] text-rose-500/70 mt-0.5">Votre épargne sera épuisée. Augmentez vos versements ou réduisez vos dépenses.</p>
+				</div>
+			{:else if hasRetirementPhase}
+				<div class="bg-emerald-950/10 border border-emerald-900/20 rounded-xl p-4 col-span-2">
+					<p class="text-[9px] text-zinc-500 uppercase tracking-wider mb-1">Patrimoine à la retraite</p>
+					<p class="text-2xl font-bold text-emerald-400 font-mono">Au-delà de 95 ans</p>
+					<p class="text-[9px] text-emerald-500/70 mt-0.5">Votre épargne couvre toute la durée de la retraite projetée.</p>
+				</div>
+			{/if}
 		</div>
+
+		<!-- ── Readiness Gauge (TASK-5.5) ─────────────────────────────────── -->
+		{#if readiness}
+			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4 flex justify-center">
+				<ReadinessGauge
+					score={readiness.score}
+					label={readiness.label}
+					color={readiness.color}
+					summary={readiness.summary}
+					components={readiness.components}
+				/>
+			</div>
+		{/if}
 
 		<!-- ── Wealth chart ────────────────────────────────────────────────── -->
 		<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
 			<p class="text-xs font-semibold text-zinc-300 mb-2">Trajectoire patrimoine</p>
 			<AreaChart data={wealthChartData} height={140} color="#2dd4bf" goalLine={null}
 				startLabel="{firstYear?.year || ''} ({firstYear?.age || ''} ans)"
-				endLabel="{lastYear?.year || ''} ({lastYear?.age || ''} ans)" />
+				endLabel="{lastYear?.year || ''} ({lastYear?.age || ''} ans)"
+				showRetirementMarker={hasRetirementPhase} retirementIndex={retirementIndex > -1 ? retirementIndex : -1} />
 		</div>
 
 		<!-- ── Income chart ────────────────────────────────────────────────── -->
@@ -209,7 +329,8 @@
 			<p class="text-xs font-semibold text-zinc-300 mb-2">Revenu total mensuel (travail + passif + projets)</p>
 			<AreaChart data={incomeChartData} height={120} color="#10b981" goalLine={goalLineValue}
 				startLabel="{fmt(firstYear?.total_monthly_income || '0')}/mois"
-				endLabel="{fmt(lastYear?.total_monthly_income || '0')}/mois" />
+				endLabel="{fmt(lastYear?.total_monthly_income || '0')}/mois"
+				showRetirementMarker={hasRetirementPhase} retirementIndex={retirementIndex > -1 ? retirementIndex : -1} />
 			{#if goalLineValue}<div class="text-center mt-1"><span class="text-[9px] text-amber-400/70">Objectif: {fmt(goalLineValue)}</span></div>{/if}
 		</div>
 
@@ -268,6 +389,9 @@
 			</table>
 		</div>
 
+		<!-- ── Insights Engine (TASK-5.4) ─────────────────────────────────── -->
+		<InsightCards insights={projection?.insights || []} />
+
 		<!-- ── Insight cards ───────────────────────────────────────────────── -->
 		<div class="space-y-3">
 			{#if insightState === 'reached'}
@@ -298,3 +422,17 @@
 		</div>
 	{/if}
 </div>
+
+<!-- ── Scenario Panel (TASK-5.7) ────────────────────────────────── -->
+<ScenarioPanel
+	bind:this={scenarioPanel}
+	open={scenarioOpen}
+	loading={scenarioLoading}
+	currentScale={currentScale}
+	baseSummary={projection?.summary}
+	scenarioResult={scenarioResult}
+	on:compare={handleCompare}
+	on:reset={handleScenarioReset}
+	on:apply={handleScenarioApply}
+	on:close={() => { scenarioOpen = false; scenarioResult = null; }}
+/>

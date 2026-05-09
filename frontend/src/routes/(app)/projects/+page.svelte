@@ -150,9 +150,16 @@
 	$: abattementAE = annualGrossCA * abattementRate;
 	$: baseAE = Math.max(0, annualGrossCA - abattementAE);
 	$: cotisationsAE = Math.round(baseAE * cotisationRate);
-	$: baseEIRL = Math.max(0, annualGrossCA - totalCharges);
-	$: cotisationsEIRL = Math.round(baseEIRL * 0.45); // ~45% TNS
-	$: economie = totalCharges > abattementAE ? cotisationsAE - cotisationsEIRL : 0;
+	// Target status: always compute the real diff, don't zero out when AE is better
+	$: targetRate = 0.45; // ~45% TNS/charges dirigeant for all target statuses in MVP
+	$: baseTarget = Math.max(0, annualGrossCA - totalCharges);
+	$: cotisationsTarget = Math.round(baseTarget * targetRate);
+	// economie: positive = target pays MORE in cotisations = AE advantage (AE keeps this much more)
+	$: economie = cotisationsTarget - cotisationsAE;
+	$: netAE = annualGrossCA - cotisationsAE;
+	$: netTarget = annualGrossCA - cotisationsTarget;
+	// netDiff: positive = AE keeps more
+	$: netDiff = netAE - netTarget;
 
 	$: caLabel = aeActivityType === 'bic_vente' ? 'BIC vente' : aeActivityType === 'bic_services' ? 'BIC services' : 'BNC';
 
@@ -356,9 +363,9 @@
 						</div>
 						<div class="flex justify-between"><span class="text-zinc-400">Cotisations AE ({(cotisationRate * 100).toFixed(1)}%)</span><span class="font-mono text-rose-400">−{fmt(cotisationsAE)}/an</span></div>
 						<div class="flex justify-between border-t border-zinc-700/50 pt-1.5">
-							<span class="text-zinc-400">Base cotisations {statusTarget.toUpperCase()}</span><span class="font-mono text-zinc-200">{fmt(baseEIRL)}/an</span>
+							<span class="text-zinc-400">Base cotisations {statusTarget.toUpperCase()}</span><span class="font-mono text-zinc-200">{fmt(baseTarget)}/an</span>
 						</div>
-						<div class="flex justify-between"><span class="text-zinc-400">Cotisations {statusTarget.toUpperCase()} (~45% TNS)</span><span class="font-mono text-rose-400">−{fmt(cotisationsEIRL)}/an</span></div>
+						<div class="flex justify-between"><span class="text-zinc-400">Cotisations {statusTarget.toUpperCase()} (~45% TNS)</span><span class="font-mono text-rose-400">−{fmt(cotisationsTarget)}/an</span></div>
 					</div>
 
 					<!-- Comparison table -->
@@ -388,32 +395,43 @@
 								<tr class="border-b border-zinc-800/30">
 									<td class="py-1.5">Base cotisations</td>
 									<td class="py-1.5 text-right font-mono">{fmt(baseAE)}</td>
-									<td class="py-1.5 text-right font-mono">{fmt(baseEIRL)}</td>
-									<td class="py-1.5 text-right font-mono {baseEIRL < baseAE ? 'text-teal-400' : 'text-amber-400'}">{baseEIRL < baseAE ? '−' : '+'}{fmt(Math.abs(Math.round(baseAE - baseEIRL)))}</td>
+									<td class="py-1.5 text-right font-mono">{fmt(baseTarget)}</td>
+									<td class="py-1.5 text-right font-mono {baseTarget > baseAE ? 'text-amber-400' : baseTarget < baseAE ? 'text-emerald-400' : 'text-zinc-500'}">
+										{baseTarget > baseAE ? '+' : baseTarget < baseAE ? '−' : ''}{fmt(Math.abs(Math.round(baseTarget - baseAE)))}
+									</td>
 								</tr>
 								<tr class="border-b border-zinc-800/30">
 									<td class="py-1.5">Cotisations sociales</td>
 									<td class="py-1.5 text-right font-mono text-rose-400">−{fmt(cotisationsAE)}</td>
-									<td class="py-1.5 text-right font-mono text-rose-400">−{fmt(cotisationsEIRL)}</td>
-									<td class="py-1.5 text-right font-mono {economie > 0 ? 'text-teal-400' : 'text-amber-400'}">{economie >= 0 ? '+' : ''}{fmt(Math.abs(economie))}</td>
+									<td class="py-1.5 text-right font-mono text-rose-400">−{fmt(cotisationsTarget)}</td>
+									<td class="py-1.5 text-right font-mono {economie > 0 ? 'text-emerald-400' : economie < 0 ? 'text-rose-400' : 'text-zinc-500'}">
+										{economie > 0 ? '+' : ''}{fmt(Math.abs(economie))}
+									</td>
 								</tr>
 								<tr class="border-t border-zinc-600/30 font-semibold">
 									<td class="py-2">Net après cotisations</td>
-									<td class="py-2 text-right font-mono text-zinc-200">{fmt(annualGrossCA - cotisationsAE)}</td>
-									<td class="py-2 text-right font-mono text-zinc-200">{fmt(annualGrossCA - cotisationsEIRL)}</td>
-									<td class="py-2 text-right font-mono text-teal-300">{economie > 0 ? '+' : ''}{fmt(economie)}/an</td>
+									<td class="py-2 text-right font-mono text-zinc-200">{fmt(netAE)}</td>
+									<td class="py-2 text-right font-mono text-zinc-200">{fmt(netTarget)}</td>
+									<td class="py-2 text-right font-mono {netDiff > 0 ? 'text-emerald-400' : netDiff < 0 ? 'text-rose-400' : 'text-zinc-500'}">
+										{netDiff > 0 ? '+' : ''}{fmt(Math.abs(netDiff))}/an
+									</td>
 								</tr>
 							</tbody>
 						</table>
 					</div>
 
-					{#if economie > 0}
+					<!-- Conclusion based on netDiff -->
+					{#if netDiff > 0}
+						<div class="mt-3 p-2 rounded bg-emerald-950/20 border border-emerald-900/20">
+							<p class="text-[10px] text-emerald-300">✓ L'AE reste plus avantageux — vous gardez <strong>~{fmt(netDiff)}/an</strong> de plus qu'en {statusTarget.toUpperCase()}.</p>
+						</div>
+					{:else if netDiff < 0}
 						<div class="mt-3 p-2 rounded bg-teal-950/20 border border-teal-900/20">
-							<p class="text-[10px] text-teal-300">✓ Vous économiseriez <strong>~{fmt(economie)}/an</strong> en passant en {statusTarget.toUpperCase()}. Cliquez "Appliquer" ci-dessus pour l'enregistrer dans votre projection Horizon.</p>
+							<p class="text-[10px] text-teal-300">✓ Le passage en {statusTarget.toUpperCase()} serait avantageux — vous gagneriez <strong>~{fmt(-netDiff)}/an</strong>. Cliquez "Appliquer" ci-dessus pour l'enregistrer dans votre projection Horizon.</p>
 						</div>
 					{:else}
-						<div class="mt-3 p-2 rounded bg-amber-950/20 border border-amber-900/20">
-							<p class="text-[10px] text-amber-300">L'AE reste plus avantageux pour l'instant — vos charges réelles ({fmt(totalCharges)}/an) sont inférieures à l'abattement forfaitaire ({fmt(Math.round(abattementAE))}/an).</p>
+						<div class="mt-3 p-2 rounded bg-zinc-800/30 border border-zinc-700/40">
+							<p class="text-[10px] text-zinc-400">Les deux statuts sont équivalents pour votre situation actuelle.</p>
 						</div>
 					{/if}
 				</div>

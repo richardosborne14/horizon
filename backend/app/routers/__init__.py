@@ -47,4 +47,8 @@ api_router.include_router(projects_router)
 from app.routers.projection import router as projection_router
 api_router.include_router(projection_router)
 
+# PDF Export (TASK-5.9)
+from app.routers.export import router as export_router
+api_router.include_router(export_router)
+
 # Stripe webhooks not yet mounted — will be re-added when Horizon has payment flows
