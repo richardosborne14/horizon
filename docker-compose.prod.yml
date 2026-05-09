@@ -1,0 +1,75 @@
+# Production overrides for docker-compose.yml
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# This file ONLY contains production-specific overrides.
+# Base service definitions remain in docker-compose.yml.
+# WHY: Keeping prod overrides separate makes it easy to diff dev vs prod
+# and avoids accidentally running production settings locally.
+
+services:
+  # ── FastAPI Backend (production) ──────────────────────────────────────────
+  backend:
+    # Production: no hot-reload, multiple workers for throughput
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    # No source code mount in production — use the baked image
+    volumes: []
+    environment:
+      APP_ENV: production
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+
+  # ── SvelteKit Frontend (production) ──────────────────────────────────────
+  frontend:
+    # Production: run the pre-built Node.js server (adapter-node)
+    # The image is built with `npm run build` — output goes to /app/build
+    build:
+      context: ./frontend
+      args:
+        # PUBLIC_STRIPE_PUBLISHABLE_KEY is baked into the JS bundle at compile time
+        # via $env/static/public — runtime `environment:` values do NOT reach it.
+        # WHY :?: fails loudly if key is absent in .env rather than silently baking
+        # the Dockerfile placeholder (which would cause Stripe 401s in production).
+        PUBLIC_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:?STRIPE_PUBLISHABLE_KEY must be set in .env}
+    command: node build
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    # No source mount in production
+    volumes: []
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
+
+  # ── PostgreSQL (production) ───────────────────────────────────────────────
+  db:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+
+  # ── Caddy Reverse Proxy (production) ─────────────────────────────────────
+  caddy:
+    # Use the production Caddyfile (auto-TLS via Let's Encrypt)
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+    # Remove the dev-only profile so Caddy always starts in production
+    profiles: []
+    restart: always

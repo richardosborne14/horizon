@@ -1,0 +1,95 @@
+{
+  "_comment": "Service registry for the Control Panel. Update whenever a service changes.",
+  "_note_local_ports": "This machine runs many Docker projects. Ports below are the local dev ports for comcoi-v2 specifically. Production ports are standard (80/443 via Caddy).",
+  "project": "Communauté Coiffure V2",
+  "version": "1.0.0",
+  "services": [
+    {
+      "id": "frontend",
+      "name": "SvelteKit Frontend",
+      "description": "SvelteKit SSR application serving the user interface",
+      "port_local_dev": 5178,
+      "port_docker_internal": 5173,
+      "health_endpoint": "http://localhost:5178",
+      "docker_service": "frontend",
+      "deploy_method": "docker-compose",
+      "tech": "SvelteKit 2 / Node.js 20",
+      "_port_note": "5173-5177 occupied by other projects on this dev machine — using 5178"
+    },
+    {
+      "id": "backend",
+      "name": "FastAPI Backend",
+      "description": "Python FastAPI REST API with business logic and AI services",
+      "port_local_dev": 8002,
+      "port_docker_internal": 8000,
+      "health_endpoint": "http://localhost:8002/api/health",
+      "docker_service": "backend",
+      "deploy_method": "docker-compose",
+      "tech": "FastAPI 0.115 / Python 3.12",
+      "_port_note": "8000/8001 occupied by vh-command-centre and others — using 8002"
+    },
+    {
+      "id": "database",
+      "name": "PostgreSQL + pgvector",
+      "description": "PostgreSQL 16 with pgvector extension for relational data and CoCo RAG embeddings",
+      "port_local_dev": 5436,
+      "port_docker_internal": 5432,
+      "health_endpoint": null,
+      "docker_service": "db",
+      "deploy_method": "docker-compose",
+      "tech": "PostgreSQL 16 / pgvector",
+      "_port_note": "5432-5435/5439 occupied by local PG and other Docker DBs — using 5436"
+    },
+    {
+      "id": "caddy",
+      "name": "Caddy Reverse Proxy",
+      "description": "Caddy handles reverse proxy, auto-TLS in production",
+      "port_local_dev": 80,
+      "port_docker_internal": 80,
+      "health_endpoint": null,
+      "docker_service": "caddy",
+      "deploy_method": "docker-compose",
+      "tech": "Caddy 2",
+      "_start_with": "docker compose --profile proxy up caddy"
+    }
+  ],
+  "environments": {
+    "development": {
+      "frontend_url": "http://localhost:5178",
+      "api_url": "http://localhost:8002",
+      "db_host": "localhost",
+      "db_port": 5436,
+      "db_name": "comcoi",
+      "db_user": "comcoi"
+    },
+    "production": {
+      "frontend_url": "https://app.communaute-coiffure.fr",
+      "api_url": "https://api.communaute-coiffure.fr",
+      "db_host": "db",
+      "db_port": 5432
+    }
+  },
+  "infrastructure": {
+    "provider": "hetzner",
+    "server_name": "comcoi-prod",
+    "server_type": "cx22",
+    "server_type_description": "2 vCPU, 4 GB RAM, 40 GB SSD — ~€4.15/month",
+    "location": "nbg1",
+    "location_description": "Nuremberg, Germany (EU data residency)",
+    "image": "ubuntu-24.04",
+    "ssh_key_name": "comcoi-deploy",
+    "ssh_key_local": "~/.ssh/comcoi_hetzner",
+    "deploy_user": "comcoi",
+    "remote_dir": "/opt/comcoi",
+    "provision_script": "scripts/provision-hetzner.sh",
+    "deploy_script": "scripts/deploy.sh",
+    "_note": "Run provision-hetzner.sh once to create the VM. Then use deploy.sh for all subsequent deploys."
+  },
+  "quick_start": {
+    "backend_and_db": "docker compose up db backend -d",
+    "frontend_dev": "cd frontend && npm run dev",
+    "run_migrations": "docker compose exec backend alembic upgrade head",
+    "backend_logs": "docker compose logs backend -f",
+    "db_connect_local": "psql -h localhost -p 5436 -U comcoi -d comcoi"
+  }
+}

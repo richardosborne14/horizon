@@ -1,0 +1,51 @@
+# Demo Caddyfile — comcoi-demo.digitalbricks.io
+#
+# Single-domain setup for the demo/testing environment.
+# Caddy auto-provisions TLS from Let's Encrypt.
+#
+# Prerequisites:
+#   - DNS A record: comcoi-demo.digitalbricks.io → <server_ip>
+#   - Ports 80 and 443 open in UFW
+#   - caddy-data volume mounted (for cert persistence)
+#
+# Routing:
+#   /api/* → FastAPI backend (port 8000, Docker internal)
+#   /*     → SvelteKit frontend (port 3000, Docker internal)
+#
+# WHY single domain (no api subdomain):
+#   The demo is on digitalbricks.io which may have different DNS control.
+#   Single domain is simpler to configure and test on.
+
+comcoi-demo.digitalbricks.io {
+    # Proxy /api/* directly to FastAPI backend
+    # WHY route at Caddy level (not SvelteKit hooks.server.ts):
+    # Avoids the double-hop: browser → SvelteKit → backend
+    # Caddy routes direct to backend, SvelteKit handles everything else
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # Everything else → SvelteKit frontend (adapter-node, PORT=3000)
+    handle {
+        reverse_proxy frontend:3000
+    }
+
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+
+    encode gzip
+
+    log {
+        output file /var/log/caddy/demo.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}

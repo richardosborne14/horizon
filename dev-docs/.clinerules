@@ -1,0 +1,100 @@
+# Project: Horizon 30 — Phase: MVP
+
+## Dev Environment
+
+| Resource | Value |
+|----------|-------|
+| **Local ports** | DB: 47432 · Backend: 47002 · Frontend: 47178 |
+| **Start stack** | `docker compose up -d` from project root |
+| **Frontend rebuild (source)** | `docker compose build frontend && docker compose up -d frontend` |
+| **Frontend rebuild (packages)** | `docker compose build frontend && docker compose up -d -V frontend` |
+
+## Before EVERY Task — Read These
+
+1. `dev-docs/HORIZON30_PROJECT_PLAN.md` — master plan, .clinerules, stack, sprint overview
+2. `dev-docs/LEARNINGS.md` — active gotchas
+3. `dev-docs/PROTOTYPE_REFERENCE.md` — UX patterns from the prototype
+4. Current sprint plan in `dev-docs/sprints/`
+
+**Read on demand when task touches that domain:**
+- Prototype → `dev-docs/prototype/horizon30.jsx`
+- Calculations → check the relevant `calculations/` module
+
+## Core Rules
+
+### Quality
+- Unit tests mandatory for all calculations, API endpoints, lifecycle logic
+- Smoke test after every change — verify in running browser at localhost:47178
+- Handle errors explicitly — no silent failures
+- Every function gets a docstring
+- Comment the "why" for non-obvious decisions
+
+### Workflow
+- Plan mode FIRST — propose approach and get approval before writing code
+- One task at a time — document side issues, don't fix inline
+- Update LEARNINGS.md after every task if gotchas discovered
+- Never start serious dev without a task doc
+
+### Architecture
+- Follow existing patterns — check the codebase first
+- No new dependencies without discussion
+- Database changes need Alembic migrations
+- Frontend displays, backend computes — ALL projection calculations run server-side
+- French locale everywhere — i18n keys, no hardcoded strings
+- Dark theme only (zinc-950 base) — prototype is the style guide
+
+### Calculation Rules (CRITICAL)
+- NUMERIC(12,2) in DB, never FLOAT
+- All money as Decimal in Python, never float
+- Inflation compounds: `base * (1 + rate) ** years`
+- AE cotisation rates are TIME-DEPENDENT — use the rate schedule, not a flat rate
+- Round at display time only, not during intermediate steps
+- Test projections against hand-calculated examples
+
+### Life Entity Rules
+- Every entity (kid, pet, car, tech) has an age and a cost lifecycle
+- Costs are time-bounded: `from_age` → `to_age` for kids, `replace_cycle` for assets
+- Canned defaults are starting points — user ALWAYS overrides
+- Progressive calculations: the engine must know WHEN costs start/stop/change
+- LLM suggestions are advisory — user confirms before anything affects projections
+
+### Frontend Conventions
+- ALL text via i18n keys — hierarchical: `runway.chart.title`
+- Design tokens in `design-tokens.css` (dark theme: zinc/teal/amber palette)
+- Sidebar nav, not tabs — prototype layout is canonical
+- Input pattern: label above, suffix inside, hint below
+- Cards with accent border-left for section grouping
+- Charts: simple SVG area/line only, no chart libraries for MVP
+- Auto-save with debounce (800ms) on all input changes
+- Reuse components: Card, Inp, Sel, StatCard, InfoBox, AreaChart
+
+### UI/UX Rules
+- Use **Inter** for UI text, **JetBrains Mono** for financial numbers
+- Primary teal (#2dd4bf) for main actions — one teal CTA per view
+- Accent colors: amber (warnings), rose (negative), emerald (positive), purple (savings), sky (info)
+- Dark background (zinc-950 #09090b), card backgrounds (zinc-900/40)
+- All financial numbers in JetBrains Mono, right-aligned, French locale (3 500,00 €)
+- Every number input: label above, € suffix inside, hint below
+- Profit indicators: emerald with encouraging text. Loss: amber with supportive text.
+- Scale selector: 3-button bar (☀️ Optimiste / ⛅ Modéré / 🌧️ Pessimiste)
+- Skeleton loading screens, not spinners
+- No light mode, no onboarding carousel
+
+## Definition of Done — After EVERY Change
+
+A task is NOT done until verified in the running browser.
+
+| Change type | Rebuild command | Then verify |
+|---|---|---|
+| Frontend source | `docker compose build frontend && docker compose up -d frontend` | Hard-refresh (`Cmd+Shift+R`) at :47178 |
+| Frontend packages | `docker compose build frontend && docker compose up -d -V frontend` | Check logs: `docker compose logs frontend --tail=15` |
+| Backend source | `docker compose up -d --build backend` | Check logs: `docker compose logs backend --tail=30` |
+| Alembic migration | `docker compose exec -w /app -e PYTHONPATH=/app backend alembic upgrade head` | Check logs |
+
+**NEVER:** run `npm run build` standalone (Docker won't see it) · run `docker compose up -d` without `--build` after changes · declare complete without browser verification.
+
+## When a Tool Call Returns "result missing"
+
+1. Retry the exact same command once.
+2. If it fails again: "Tool call failed, cannot proceed" — ask the user.
+3. DO NOT continue as if the result was obtained.

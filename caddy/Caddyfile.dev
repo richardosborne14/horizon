@@ -1,0 +1,16 @@
+# Development Caddyfile — uses localhost, no TLS
+# Access via http://localhost (port 80)
+# Frontend: http://localhost → SvelteKit
+# API:      http://localhost/api → FastAPI
+
+localhost {
+    # Proxy /api/* to FastAPI backend
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # Everything else → SvelteKit frontend
+    handle {
+        reverse_proxy frontend:5173
+    }
+}

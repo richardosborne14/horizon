@@ -1,0 +1,33 @@
+{
+  "_comment": "All external URLs referenced in the app. No hardcoded URLs in components — always use this file.",
+  "social": {
+    "facebook": "https://www.facebook.com/communautecoiffure",
+    "instagram": "https://www.instagram.com/communautecoiffure",
+    "linkedin": ""
+  },
+  "cta": {
+    "booking_eric": "https://calendly.com/communautecoiffure",
+    "contact_form": "#booking-form",
+    "contact_email": "mailto:eric@communaute-coiffure.fr",
+    "calendly_eric": ""
+  },
+  "partners": {
+    "noly_compta": "https://www.noly-compta.fr",
+    "noly_sso": "https://app.noly-compta.fr/sso"
+  },
+  "legal": {
+    "privacy_policy": "/legal/confidentialite",
+    "terms_of_service": "/legal/conditions-utilisation",
+    "mentions_legales": "/legal/mentions"
+  },
+  "support": {
+    "help_center": "https://aide.communaute-coiffure.fr",
+    "email": "mailto:support@communaute-coiffure.fr",
+    "contact_labels": "mailto:contact@comcoi.fr"
+  },
+  "external": {
+    "urssaf": "https://www.urssaf.fr",
+    "impots_gouv": "https://www.impots.gouv.fr",
+    "service_public": "https://www.service-public.fr"
+  }
+}

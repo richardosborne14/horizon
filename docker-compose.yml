@@ -1,0 +1,97 @@
+services:
+  # ── PostgreSQL 16 + pgvector ──────────────────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: horizon
+      POSTGRES_PASSWORD: horizon_dev_password
+      POSTGRES_DB: horizon
+    ports:
+      # 48432: horizon-deepseek project (47432 used by other horizon project)
+      - "48432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U horizon -d horizon"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ───────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # WHY: Use ${DATABASE_URL} from .env so production uses the real credentials.
+      # Falls back to dev password when .env is absent (local dev without .env).
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://horizon:horizon_dev_password@db:5432/horizon}
+    ports:
+      # 48002: horizon-deepseek project (47002 used by other horizon project)
+      - "48002:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # WHY no volumes/command here: dev-specific hot-reload mounts and --reload flag
+    # live in docker-compose.override.yml which Docker Compose auto-loads in dev.
+    # Production compose files (-f flags) skip override.yml, so no dev mounts bleed in.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+  # ── SvelteKit Frontend ────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # PUBLIC_API_URL as build arg: vite build needs it for $env/static/public
+        # In dev, /api is sufficient (browser hits the same host via Caddy/vite proxy).
+        # In production, this is overridden to the real public URL.
+        PUBLIC_API_URL: http://localhost:48002
+    restart: unless-stopped
+    environment:
+      # PUBLIC_API_URL: used by client-side JS (browser fetches go to host:port)
+      PUBLIC_API_URL: http://localhost:48002
+      # BACKEND_URL: used by SSR server files via process.env.BACKEND_URL
+      # WHY: Inside Docker, localhost:47002 is the HOST machine — unreachable.
+      # The backend container is at http://backend:8000 on Docker's internal network.
+      # All *.server.ts files use process.env.BACKEND_URL so this runtime value wins
+      # over anything baked at build time. (Fixed: Task 2.7 port sync overhaul)
+      BACKEND_URL: http://backend:8000
+    ports:
+      # 48178: horizon-deepseek project (47178 used by other horizon project)
+      - "48178:48178"
+    depends_on:
+      - backend
+    # WHY no volumes/command here: see backend note above.
+    # Dev overrides (source mount + npm run dev) are in docker-compose.override.yml.
+    # Production runs `node build` from the image's compiled /app/build directory.
+    command: node build
+
+  # ── Caddy Reverse Proxy ───────────────────────────────────────────────────
+  # In development, Caddy is optional — access services directly on their ports.
+  # In production, Caddy handles TLS and proxies traffic to both services.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile.dev:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
+      - backend
+    profiles:
+      # Only start Caddy explicitly: docker compose --profile proxy up
+      - proxy
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,110 @@
+/* Import design tokens */
+@import './styles/design-tokens.css';
+
+/* Tailwind base, components, utilities */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base styles ──────────────────────────────────────────────────────────── */
+@layer base {
+	* {
+		box-sizing: border-box;
+	}
+
+	html {
+		font-family: var(--font-sans);
+		background-color: var(--bg-primary);
+		color: var(--text-primary);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	body {
+		margin: 0;
+		min-height: 100vh;
+		background-color: var(--bg-primary);
+		color: var(--text-primary);
+	}
+
+	select,
+	input,
+	textarea {
+		font-size: max(1rem, 16px);
+	}
+
+	/* Focus styles — teal ring on dark */
+	:focus-visible {
+		outline: 2px solid var(--border-focus);
+		outline-offset: 2px;
+	}
+
+	/* Selection — teal highlight */
+	::selection {
+		background: rgba(45, 212, 191, 0.3);
+		color: #ffffff;
+	}
+
+	/* Scrollbar — thin dark */
+	::-webkit-scrollbar {
+		width: 6px;
+		height: 6px;
+	}
+	::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	::-webkit-scrollbar-thumb {
+		background: #27272a;
+		border-radius: 3px;
+	}
+	::-webkit-scrollbar-thumb:hover {
+		background: #3f3f46;
+	}
+
+	/* Firefox scrollbar */
+	* {
+		scrollbar-width: thin;
+		scrollbar-color: #27272a transparent;
+	}
+}
+
+/* ── Component classes (auth forms, shared UI) ───────────────────────────── */
+@layer components {
+	/* Form labels */
+	.label {
+		@apply block text-xs font-medium text-zinc-300 mb-1.5;
+	}
+
+	/* Form inputs */
+	.input {
+		@apply w-full bg-zinc-800/40 border border-zinc-700/40 rounded-lg
+		px-3 py-2.5 text-sm text-zinc-100
+		placeholder-zinc-500
+		focus:outline-none focus:border-teal-500/60 focus:ring-1 focus:ring-teal-500/30
+		transition-colors duration-150;
+	}
+
+	/* Error state — handled via explicit CSS to avoid @apply circularity */
+	.input.border-red-400 {
+		border-color: rgba(248, 113, 113, 0.6);
+	}
+	.input.border-red-400:focus {
+		border-color: rgba(248, 113, 113, 0.8);
+		box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.15);
+	}
+
+	/* Error message text */
+	.error-msg {
+		@apply mt-1 text-xs text-red-400;
+	}
+
+	/* Primary button */
+	.btn-primary {
+		@apply inline-flex items-center justify-center gap-2
+		bg-teal-600 hover:bg-teal-500
+		text-white text-sm font-medium
+		px-4 py-2.5 rounded-lg
+		transition-colors duration-150
+		disabled:opacity-50 disabled:cursor-not-allowed;
+	}
+}

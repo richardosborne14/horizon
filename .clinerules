@@ -1,0 +1,116 @@
+# Project: Communauté Coiffure V2 — Phase: MVP (Phase 1)
+
+## Dev Environment
+
+| Resource | Value |
+|----------|-------|
+| **Smoke-test user** | `smoketest@comcoi.fr` / `Password123!` (Estelle Desmons) |
+| **Local ports** | DB: 48432 · Backend: 48002 · Frontend: 48178 |
+| **Start stack** | `docker compose up -d` from project root |
+| **Frontend rebuild (source)** | `docker compose build frontend && docker compose up -d frontend` |
+| **Frontend rebuild (packages)** | `docker compose build frontend && docker compose up -d -V frontend` |
+
+## Before EVERY Task — Read These
+
+1. `dev-docs/ARCHITECTURE.md` — system design, DB schema, CoCo architecture
+2. `dev-docs/LEARNINGS.md` — active gotchas (compact table)
+3. Current sprint plan in `dev-docs/sprints/`
+
+**Read on demand when task touches that domain:**
+- Calculations → `dev-docs/CALCULATION_FORMULAS.md` + `dev-docs/resources/05-calculation-reference.md`
+- Salaries / charges / employees → `dev-docs/resources/06-social-charges-reference.md`
+- CoCo recommendations / landing page / /plus page → `dev-docs/resources/04-services-catalog.md`
+
+## Core Rules
+
+### Quality
+- **Unit tests mandatory** for all business logic, API endpoints, financial calculations
+- **Smoke test after every change** — verify in running browser at `http://localhost:48178`
+- **Handle errors explicitly** — no silent failures, no empty catch blocks
+- **Every function gets a docstring** — parameters, return type, purpose
+- **Comment the "why"** for non-obvious decisions
+
+### Workflow
+- **Plan mode FIRST** — propose approach and get approval before writing code
+- **One task at a time** — document side issues in `dev-docs/issues/ACTIVE.md`, don't fix inline
+- **Update docs after every task** — LEARNINGS.md for gotchas, sprint plan for status
+- **Never start serious dev without a task doc** — small bug fixes in plan mode are ok
+
+### Architecture
+- **Follow existing patterns** — check the codebase first
+- **No new dependencies without discussion**
+- **Database changes need Alembic migrations**
+- **Frontend displays, backend computes** — all financial calcs run on the backend
+- **French locale everywhere** — i18n keys, no hardcoded French strings
+
+### Calculation Rules (CRITICAL)
+- **NUMERIC(12,2)** in DB, never FLOAT. Payslip wallet uses INTEGER cents.
+- **TVA = `Decimal('1.2')`** not `1.2`
+- **Round at display time only**, not during intermediate steps
+- **Test every formula against Eric's Excel** — when unclear, ASK THE HUMAN
+
+### CoCo Rules
+- Every interactive UI element: `data-coco-desc` attribute (plain French)
+- Every calculator screen: expose state to CoCo context via Svelte store
+- CoCo MUST NEVER give legal/tax advice — recommend a professional
+- CoCo conversations stored in DB; no raw financial data to web search APIs
+
+### Frontend Conventions
+- ALL text via i18n keys — hierarchical: `dashboard.header.title`
+- CSS custom properties with `@tweak` annotations for tweakable styles
+- External URLs in `src/config/links.json`, meta in `src/config/meta.json`
+- New page → update meta.json + i18n keys. New component → add `data-coco-desc` + i18n keys.
+
+## Definition of Done — After EVERY Change
+
+A task is NOT done until verified in the running browser.
+
+| Change type | Rebuild command | Then verify |
+|---|---|---|
+| Frontend source | `docker compose build frontend && docker compose up -d frontend` | Hard-refresh (`Cmd+Shift+R`) at :48178 |
+| Frontend packages | `docker compose build frontend && docker compose up -d -V frontend` | Check logs: `docker compose logs frontend --tail=15` |
+| Backend source | `docker compose up -d --build backend` | Check logs: `docker compose logs backend --tail=30` |
+| Alembic migration | `docker compose exec -w /app -e PYTHONPATH=/app backend alembic upgrade head` | Check logs |
+
+**NEVER:** run `npm run build` standalone (Docker won't see it) · run `docker compose up -d` without `--build` after changes · declare complete without browser verification.
+
+## When a Tool Call Returns "result missing"
+
+1. Retry the exact same command once.
+2. If it fails again: "Tool call failed, cannot proceed" — ask the user.
+3. DO NOT continue as if the result was obtained.
+
+## Issue Registry
+
+Bugs discovered during a task (not the one being fixed) → write to `dev-docs/issues/ACTIVE.md`:
+```
+## [BUG/ENHANCEMENT] Short description
+- **Found during:** Task X.Y
+- **Severity:** P0 (blocking) / P1 (serious) / P2 (minor)
+- **Description / Reproduction / Suggested fix**
+```
+
+## Ask Human When
+
+- Financial formula doesn't match Excel (NEVER guess)
+- Security decisions · Architectural changes not in spec
+- Stripe webhooks · Noly integration · CoCo system prompt wording
+- Confidence below 8/10 · Task taking much longer than expected
+
+## What NOT To Do
+
+- Skip tests · Use `any` in TypeScript · Store secrets in code
+- Use JS `number` for financial calcs (display only) · Hardcode French strings
+- Refactor outside task scope · Add unspecified features
+- Install deps without checking latest stable version first
+- Push to production directly — dev first, user promotes
+
+## Tech Quick Ref
+
+**SvelteKit:** `$lib/` aliases · `if (browser)` guard for `window`/`document` · `+page.server.ts` for data fetching · Svelte stores for reactive state · After package changes use `-V` flag (mandatory)
+**FastAPI:** Routes in `routers/`, logic in `services/` · Pydantic v2 · `Depends()` for auth/DB · async only · proper HTTP status codes
+**Tailwind:** Design tokens from `design-tokens.css` · Mobile-first · `@tweak` on custom properties
+
+## Confidence Scoring
+
+After each task: report `Confidence: X/10` with met/deferred items and test status. **8/10 minimum to proceed.**

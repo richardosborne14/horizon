@@ -1,0 +1,71 @@
+# Production Caddyfile — Communauté Coiffure
+#
+# Caddy automatically provisions TLS certificates from Let's Encrypt.
+# Prerequisites:
+#   - DNS A records for both domains pointing to this server's IP
+#   - Port 80 and 443 open in firewall
+#   - Caddy data volume mounted (for certificate persistence)
+#
+# Domains:
+#   app.communaute-coiffure.fr  → SvelteKit frontend (port 3000)
+#   api.communaute-coiffure.fr  → FastAPI backend (port 8000)
+
+# ── Main app domain ────────────────────────────────────────────────────────────
+app.communaute-coiffure.fr {
+    # Proxy /api/* to FastAPI backend
+    # WHY separate /api/* here: allows frontend and backend on different subdomains
+    # but also lets us serve API from the same domain if needed later
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # Everything else → SvelteKit frontend
+    # SvelteKit adapter-node listens on PORT env var (set to 3000 in docker-compose.prod.yml)
+    handle {
+        reverse_proxy frontend:3000
+    }
+
+    # Security headers
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        # HSTS: 1 year, include subdomains
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+
+    # Enable gzip compression for text assets
+    encode gzip
+
+    # Access logs
+    log {
+        output file /var/log/caddy/app.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}
+
+# ── Dedicated API subdomain ────────────────────────────────────────────────────
+# Allows direct API access for integrations, mobile apps, etc.
+api.communaute-coiffure.fr {
+    reverse_proxy backend:8000
+
+    header {
+        X-Frame-Options "DENY"
+        X-Content-Type-Options "nosniff"
+        Strict-Transport-Security "max-age=31536000"
+        -Server
+    }
+
+    encode gzip
+
+    log {
+        output file /var/log/caddy/api.log {
+            roll_size 10mb
+            roll_keep 5
+        }
+    }
+}

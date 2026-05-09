@@ -1,0 +1,42 @@
+# docker-compose.override.yml — Development overrides
+#
+# Docker Compose automatically loads this file when you run `docker compose up`
+# WITHOUT explicit -f flags. It is NEVER loaded when you specify files manually
+# (e.g. in deploy-demo.sh or deploy.sh which use -f docker-compose.yml -f ... ).
+#
+# WHY this file exists:
+#   Docker Compose MERGES volume lists — `volumes: []` in a prod override does NOT
+#   clear volumes defined in the base file. The only way to prevent dev mounts from
+#   leaking into production containers is to define them here (not in docker-compose.yml).
+#
+# Dev workflow (unchanged):
+#   docker compose up -d          ← loads docker-compose.yml + this file automatically
+#   docker compose build frontend ← re-build then restart
+#
+# Production deploys explicitly skip this file:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.demo.yml up -d
+
+services:
+  # ── Backend: hot-reload in development ───────────────────────────────────
+  backend:
+    volumes:
+      # Source mount enables uvicorn --reload to pick up code changes instantly
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Frontend: hot-reload in development ──────────────────────────────────
+  frontend:
+    environment:
+      # Override PORT so vite dev server listens on 48178 (matches port mapping)
+      PORT: "48178"
+      # Stripe publishable key — browser-safe (not secret).
+      # WHY PUBLIC_: SvelteKit $env/static/public convention for client-visible vars.
+      # Reads STRIPE_PUBLISHABLE_KEY from your local .env if present, falls back to
+      # placeholder so the dev stack starts even without a real key configured.
+      PUBLIC_STRIPE_PUBLISHABLE_KEY: "${STRIPE_PUBLISHABLE_KEY:-pk_test_PLACEHOLDER_replace_with_real_key}"
+    volumes:
+      # Source mount enables Vite HMR (hot module replacement)
+      - ./frontend:/app
+      # Preserve container's node_modules — don't overwrite with (possibly absent) host node_modules
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 48178

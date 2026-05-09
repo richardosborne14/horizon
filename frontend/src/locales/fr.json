@@ -1,0 +1,292 @@
+{
+  "product": {
+    "name": "Horizon",
+    "full_name": "Horizon — Moteur patrimonial freelance"
+  },
+  "common": {
+    "app_name": "Horizon",
+    "loading": "Chargement...",
+    "save": "Enregistrer",
+    "saving": "Enregistrement...",
+    "cancel": "Annuler",
+    "delete": "Supprimer",
+    "edit": "Modifier",
+    "add": "Ajouter",
+    "close": "Fermer",
+    "back": "Retour",
+    "next": "Suivant",
+    "previous": "Précédent",
+    "confirm": "Confirmer",
+    "yes": "Oui",
+    "no": "Non",
+    "search": "Rechercher",
+    "filter": "Filtrer",
+    "export": "Exporter",
+    "required": "Requis",
+    "optional": "Optionnel",
+    "or": "ou",
+    "and": "et",
+    "euro": "€",
+    "percent": "%",
+    "calculating": "Calcul en cours...",
+    "validate": "C'est bon",
+    "valider": "Valider"
+  },
+  "nav": {
+    "identity": "Identité",
+    "revenue": "Revenus",
+    "expenses": "Charges",
+    "life": "Vie",
+    "savings": "Épargne",
+    "projects": "Projets",
+    "runway": "Horizon",
+    "settings": "Paramètres",
+    "admin": "Administration",
+    "logout": "Déconnexion"
+  },
+  "auth": {
+    "login": {
+      "title": "Bienvenue",
+      "subtitle": "Connectez-vous à votre espace Horizon",
+      "email_label": "Adresse e-mail",
+      "email_placeholder": "votre@email.fr",
+      "password_label": "Mot de passe",
+      "password_placeholder": "Votre mot de passe",
+      "submit": "Se connecter",
+      "submitting": "Connexion...",
+      "forgot_password": "Mot de passe oublié ?",
+      "no_account": "Pas encore de compte ?",
+      "register_link": "Créer un compte",
+      "success": "Connexion réussie"
+    },
+    "register": {
+      "title": "Créer un compte",
+      "subtitle": "Rejoignez Horizon",
+      "full_name_label": "Votre nom complet",
+      "full_name_placeholder": "Marie Dupont",
+      "email_label": "Adresse e-mail",
+      "email_placeholder": "votre@email.fr",
+      "password_label": "Mot de passe",
+      "password_placeholder": "8 caractères minimum",
+      "confirm_password_label": "Confirmer le mot de passe",
+      "confirm_password_placeholder": "Retapez votre mot de passe",
+      "submit": "Créer mon compte",
+      "submitting": "Création...",
+      "already_account": "Déjà un compte ?",
+      "login_link": "Se connecter",
+      "terms_text": "En créant un compte, vous acceptez nos",
+      "terms_link": "conditions d'utilisation",
+      "success": "Compte créé avec succès"
+    },
+    "reset_password": {
+      "title": "Mot de passe oublié",
+      "subtitle": "Entrez votre e-mail pour recevoir un lien de réinitialisation",
+      "email_label": "Adresse e-mail",
+      "email_placeholder": "votre@email.fr",
+      "submit": "Envoyer le lien",
+      "submitting": "Envoi...",
+      "back_to_login": "Retour à la connexion",
+      "success_title": "E-mail envoyé !",
+      "success_message": "Vérifiez votre boîte mail. Le lien est valable 1 heure.",
+      "not_found": "Aucun compte associé à cet e-mail."
+    },
+    "reset_confirm": {
+      "title": "Nouveau mot de passe",
+      "subtitle": "Choisissez un nouveau mot de passe sécurisé",
+      "password_label": "Nouveau mot de passe",
+      "password_placeholder": "8 caractères minimum",
+      "confirm_label": "Confirmer le mot de passe",
+      "confirm_placeholder": "Retapez votre nouveau mot de passe",
+      "submit": "Réinitialiser",
+      "submitting": "Réinitialisation...",
+      "success_title": "Mot de passe modifié !",
+      "success_message": "Vous pouvez maintenant vous connecter avec votre nouveau mot de passe.",
+      "login_link": "Se connecter",
+      "invalid_token": "Ce lien est invalide ou a expiré."
+    }
+  },
+  "errors": {
+    "required": "Ce champ est obligatoire.",
+    "email_invalid": "Veuillez entrer une adresse e-mail valide.",
+    "password_too_short": "Le mot de passe doit contenir au moins 8 caractères.",
+    "passwords_no_match": "Les mots de passe ne correspondent pas.",
+    "email_taken": "Un compte existe déjà avec cette adresse e-mail.",
+    "invalid_credentials": "E-mail ou mot de passe incorrect.",
+    "account_inactive": "Votre compte est inactif. Contactez le support.",
+    "generic": "Une erreur est survenue. Veuillez réessayer.",
+    "network": "Problème de connexion. Vérifiez votre réseau.",
+    "session_expired": "Votre session a expiré. Veuillez vous reconnecter."
+  },
+  "months": {
+    "january": "Janvier",
+    "february": "Février",
+    "march": "Mars",
+    "april": "Avril",
+    "may": "Mai",
+    "june": "Juin",
+    "july": "Juillet",
+    "august": "Août",
+    "september": "Septembre",
+    "october": "Octobre",
+    "november": "Novembre",
+    "december": "Décembre"
+  },
+  "identity": {
+    "title": "Identité",
+    "description": "Votre situation personnelle et fiscale — âge, statut juridique, parts fiscales.",
+    "coming_soon": "Disponible dans le Sprint 1"
+  },
+  "revenue": {
+    "title": "Revenus",
+    "description": "Chiffre d'affaires brut mensuel, projection de croissance, avantages fiscaux.",
+    "coming_soon": "Disponible dans le Sprint 1"
+  },
+  "expenses": {
+    "title": "Charges",
+    "description": "Dépenses mensuelles, impact de l'inflation, allocations familiales.",
+    "coming_soon": "Disponible dans le Sprint 2"
+  },
+  "life": {
+    "title": "Vie",
+    "description": "Enfants, animaux, véhicules, tech — chaque élément a un cycle de coûts.",
+    "coming_soon": "Disponible dans le Sprint 2",
+    "intro": "Entités de vie. Enfants, animaux, voitures, tech — chaque élément a un cycle de coûts qui évolue avec le temps.",
+    "no_items": "Aucun élément ajouté",
+    "delete_confirm": "Supprimer définitivement",
+    "kids": {
+      "title": "Enfants",
+      "add": "Ajouter un enfant"
+    },
+    "pets": {
+      "title": "Animaux",
+      "add": "Ajouter un animal"
+    },
+    "cars": {
+      "title": "Véhicules",
+      "add": "Ajouter un véhicule"
+    },
+    "tech": {
+      "title": "Tech",
+      "add": "Ajouter un appareil"
+    },
+    "recurring": {
+      "title": "Dépenses récurrentes à durée limitée",
+      "intro": "Remboursements de prêt, colonies de vacances, sport enfant — ce qui revient chaque année mais a une date de fin.",
+      "add": "Ajouter"
+    }
+  },
+  "savings": {
+    "title": "Épargne",
+    "header": "Épargne & allocation mensuelle",
+    "description": "Où va votre épargne mensuelle ? Renseignez vos soldes actuels et vos versements mensuels pour chaque véhicule.",
+    "spec_line": "{rate}/an · {tax} · {ceiling}",
+    "existing_balance": "Solde actuel",
+    "monthly_contribution": "Versement mensuel",
+    "existing_total": "Épargne existante",
+    "monthly_total": "Versement mensuel",
+    "annual_total": "Versement annuel",
+    "ceiling_warning": "Dépasse le plafond",
+    "loading": "Chargement des véhicules...",
+    "vehicles": {
+      "livret_a": "Livret A",
+      "ldds": "LDDS",
+      "av_euro": "Assurance Vie (fonds €)",
+      "av_uc": "Assurance Vie (UC)",
+      "pea": "PEA",
+      "scpi": "SCPI",
+      "per": "PER"
+    }
+  },
+  "projects": {
+    "title": "Projets",
+    "invest": {
+      "title": "Investissements",
+      "description": "Immobilier locatif, gîte — chaque projet a son mini bilan : revenus, charges, fiscalité.",
+      "add_button": "Ajouter un investissement",
+      "default_label": "Nouveau projet",
+      "purchase_cost": "Coût d'achat",
+      "annual_income": "Revenus locatifs/an",
+      "annual_expenses": "Charges annuelles",
+      "expenses_hint": "Ménage, entretien, assurance, travaux",
+      "tax_rate": "Taux d'imposition",
+      "tax_rate_hint": "30% micro-foncier, variable en réel",
+      "start_year": "Année",
+      "pnl_gross": "Brut",
+      "pnl_net": "Net après impôt",
+      "pnl_yield": "Rendement",
+      "negative_warning": "Ce projet coûte plus qu'il ne rapporte"
+    },
+    "events": {
+      "title": "Événements de vie",
+      "description": "Mariage, grand voyage, grosse rénovation — dépenses one-shot qui impactent votre trésorerie.",
+      "add_button": "Ajouter un événement",
+      "default_label": "Événement",
+      "year": "Année",
+      "cost": "Coût"
+    },
+    "status": {
+      "title": "Changement de statut juridique",
+      "description": "Simulez un changement de statut juridique et son impact sur vos finances.",
+      "enable_toggle": "Simuler un changement de statut",
+      "year": "Année du changement",
+      "target_status": "Nouveau statut",
+      "savings": "Économie nette annuelle",
+      "savings_hint": "Gain annuel estimé vs rester AE après déduction des vraies charges",
+      "estimator_toggle": "Estimez votre économie",
+      "explanation": "AE → EIRL/EURL : vous pouvez déduire vos vraies charges professionnelles du CA avant cotisations. Exemple : internet 50€ + bureau 200€ + voiture pro 250€ + repas midi 150€ = 650€/mois = 7 800€/an déductibles. Si vos charges réelles dépassent l'abattement forfaitaire AE de 34% (BNC), votre base imposable baisse → vous gardez plus."
+    }
+  },
+  "runway": {
+    "title": "Horizon",
+    "description": "Projection à 30 ans : patrimoine, revenus passifs, liberté financière.",
+    "scale_optimistic": "☀️ Optimiste",
+    "scale_moderate": "⛅ Modéré",
+    "scale_pessimistic": "🌧️ Pessimiste",
+    "goal_title": "Objectif de revenu mensuel à la retraite 🎯",
+    "goal_description": "Combien voulez-vous toucher (travail + passif + projets) pour ne plus dépendre de personne ?",
+    "goal_placeholder": "ex: 4000",
+    "goal_apply": "Appliquer",
+    "goal_reached": "✓ Atteint en {year} (à {age} ans)",
+    "goal_not_reached": "Pas encore atteint — augmentez l'épargne ou ajoutez des projets",
+    "wealth_title": "Patrimoine à {age} ans ({year})",
+    "passive_title": "Revenu passif mensuel",
+    "passive_sub": "Règle des 4%",
+    "wealth_chart_title": "Trajectoire patrimoine",
+    "income_chart_title": "Revenu total mensuel (travail + passif + projets)",
+    "milestones_title": "Jalons",
+    "milestones_empty": "Aucun jalon atteint sur cette période. Augmentez votre épargne mensuelle pour voir les jalons apparaître.",
+    "table_title": "Projection détaillée",
+    "table_headers": {
+      "year": "An",
+      "age": "Âge",
+      "gross": "CA brut",
+      "charges": "Cotis.",
+      "charges_pct": "Cotis.%",
+      "life": "Vie",
+      "kids": "Enfants",
+      "projects": "Projets",
+      "net": "Net",
+      "wealth": "Patrimoine",
+      "passive": "Passif/mois"
+    },
+    "insights": {
+      "reached_title": "🏆 Objectif atteint.",
+      "reached_text": "À {age} ans, vos revenus passifs ({passive}/mois) couvrent votre objectif. Vous n'avez pas besoin de la retraite d'État.",
+      "gap_title": "⚠️ Gap à combler.",
+      "gap_text": "Vos revenus passifs projetés ({passive}/mois) sont en dessous de votre objectif ({goal}). Pistes : augmenter l'épargne mensuelle, ajouter un projet immobilier, ou changer de statut juridique.",
+      "nogoal_title": "💡 Définissez un objectif.",
+      "nogoal_text": "Sans objectif, la projection montre l'évolution mais pas la destination. Combien voulez-vous toucher par mois à la retraite ? Renseignez-le ci-dessus."
+    },
+    "errors": {
+      "no_birthdate_title": "📅 Date de naissance requise",
+      "no_birthdate_text": "Pour calculer votre horizon, renseignez votre date de naissance.",
+      "no_birthdate_link": "Aller à Identité →",
+      "api_error_title": "Erreur de calcul",
+      "retry": "Réessayer"
+    },
+    "disclaimer": "⚖️ Simulateur uniquement. Ne constitue pas un conseil financier, fiscal ou juridique. Rendements historiques moyens, cotisations projetées sur tendances législatives. Les rendements passés ne préjugent pas des rendements futurs."
+  },
+  "footer": {
+    "disclaimer": "Horizon est un simulateur. Ne constitue pas un conseil financier, fiscal ou juridique."
+  }
+}

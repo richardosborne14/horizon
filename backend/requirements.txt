@@ -1,0 +1,50 @@
+# ── FastAPI & ASGI ────────────────────────────────────────────────────────────
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+
+# ── Database: SQLAlchemy 2.0 async + PostgreSQL drivers ──────────────────────
+sqlalchemy[asyncio]==2.0.40
+alembic==1.16.1
+# asyncpg: async PostgreSQL driver (fast, used at runtime)
+asyncpg==0.30.0
+# psycopg: sync PostgreSQL driver (used by Alembic for migrations)
+psycopg[binary]==3.2.6
+
+# ── pgvector: vector similarity search for CoCo RAG ─────────────────────────
+pgvector==0.3.6
+
+# ── Data validation ───────────────────────────────────────────────────────────
+pydantic==2.11.3
+pydantic-settings==2.8.1
+# email-validator is required by Pydantic's EmailStr type
+email-validator==2.2.0
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+bcrypt==4.3.0
+python-multipart==0.0.20
+
+# ── AI: Anthropic (CoCo) ─────────────────────────────────────────────────────
+anthropic==0.51.0
+
+# ── Email ────────────────────────────────────────────────────────────────────
+aiosmtplib==3.0.2
+stripe==12.1.0
+
+# ── Task 2.13.3: Inbound email + Object Storage + Scheduler ──────────────────
+# boto3: AWS S3-compatible client for Hetzner Object Storage (PDF uploads)
+boto3==1.34.144
+# pypdf: PDF text extraction for best-effort employee name matching in replies
+pypdf==4.3.1
+# apscheduler: background job scheduler for 5-minute IMAP polling
+apscheduler==3.10.4
+
+# ── HTTP client (for external API calls) ────────────────────────────────────
+httpx==0.28.1
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+python-dotenv==1.1.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.3.5
+pytest-asyncio==0.26.0
+httpx==0.28.1

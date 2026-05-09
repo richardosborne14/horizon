@@ -1,0 +1,85 @@
+{
+  "_comment": "SEO meta content for all routes. Update when adding new pages.",
+  "default": {
+    "title": "Horizon — Moteur patrimonial freelance",
+    "description": "Projection financière multi-décennale pour freelances français. Simulez votre patrimoine, vos revenus, et votre liberté financière sur 30 ans.",
+    "og_image": "/og-default.jpg"
+  },
+  "routes": {
+    "/": {
+      "title": "Horizon — Pilotez votre avenir financier",
+      "description": "Simulateur patrimonial pour freelances français. Projetez vos revenus, charges, épargne et investissements jusqu'à la retraite. Reprenez le contrôle de votre avenir financier.",
+      "og_image": "/og-home.jpg"
+    },
+    "/login": {
+      "title": "Connexion — Horizon",
+      "description": "Connectez-vous à votre espace Horizon.",
+      "og_image": null
+    },
+    "/register": {
+      "title": "Créer un compte — Horizon",
+      "description": "Rejoignez Horizon et commencez à projeter votre avenir financier.",
+      "og_image": null
+    },
+    "/reset-password": {
+      "title": "Réinitialiser le mot de passe — Horizon",
+      "description": "",
+      "og_image": null
+    },
+    "/onboarding": {
+      "title": "Bienvenue — Horizon",
+      "description": "",
+      "og_image": null
+    },
+    "/dashboard": {
+      "title": "Tableau de bord — Horizon",
+      "description": "",
+      "og_image": null
+    },
+    "/identity": {
+      "title": "Identité — Horizon",
+      "description": "Votre profil financier : âge, statut, situation fiscale.",
+      "og_image": null
+    },
+    "/revenue": {
+      "title": "Revenus — Horizon",
+      "description": "Votre chiffre d'affaires, croissance projetée et avantages fiscaux.",
+      "og_image": null
+    },
+    "/expenses": {
+      "title": "Charges — Horizon",
+      "description": "Vos dépenses mensuelles et l'impact de l'inflation.",
+      "og_image": null
+    },
+    "/life": {
+      "title": "Vie — Horizon",
+      "description": "Enfants, animaux, véhicules, tech : chaque élément a un cycle de coûts.",
+      "og_image": null
+    },
+    "/savings": {
+      "title": "Épargne — Horizon",
+      "description": "Vos placements : Livret A, PEA, assurance-vie, PER...",
+      "og_image": null
+    },
+    "/projects": {
+      "title": "Projets — Horizon",
+      "description": "Investissements immobiliers, événements, changement de statut.",
+      "og_image": null
+    },
+    "/runway": {
+      "title": "Horizon — Horizon",
+      "description": "Projection à 30 ans : patrimoine, revenus passifs, objectif de liberté financière.",
+      "og_image": null
+    },
+    "/settings": {
+      "title": "Paramètres — Horizon",
+      "description": "",
+      "og_image": null
+    },
+    "/control-panel": {
+      "title": "Administration — Horizon",
+      "description": "",
+      "og_image": null
+    }
+  }
+}

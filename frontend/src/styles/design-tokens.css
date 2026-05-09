@@ -1,0 +1,78 @@
+/*
+ * Design Tokens — Horizon
+ *
+ * Authority: dev-docs/PROTOTYPE_REFERENCE.md
+ * Dark fintech theme: zinc-950 base, teal-400 primary accent.
+ *
+ * Font stack: Inter (UI), JetBrains Mono (financial data)
+ * Two fonts instead of three — deliberate simplification from ComCoi.
+ */
+:root {
+	/* ── Typography ─────────────────────────────────────────────────────────── */
+	--font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+	--font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+	--text-xs: 0.6875rem;   /* 11px */
+	--text-sm: 0.8125rem;   /* 13px */
+	--text-base: 0.9375rem; /* 15px */
+	--text-lg: 1.125rem;    /* 18px */
+	--text-xl: 1.5rem;      /* 24px */
+	--text-2xl: 1.875rem;   /* 30px */
+	--text-3xl: 2.25rem;    /* 36px */
+
+	--font-weight-normal: 400;
+	--font-weight-medium: 500;
+	--font-weight-semibold: 600;
+	--font-weight-bold: 700;
+
+	--line-height-tight: 1.2;
+	--line-height-base: 1.5;
+	--line-height-relaxed: 1.75;
+
+	/* ── Backgrounds ────────────────────────────────────────────────────────── */
+	--bg-primary: #09090b;
+	--bg-card: rgba(24, 24, 27, 0.4);
+	--bg-card-hover: rgba(39, 39, 42, 0.2);
+	--bg-input: rgba(24, 24, 27, 0.6);
+	--bg-surface: rgba(24, 24, 27, 0.3);
+
+	/* Alias for compatibility with components using --color-surface-bg */
+	--color-surface-bg: var(--bg-primary);
+
+	/* ── Borders ────────────────────────────────────────────────────────────── */
+	--border-default: rgba(63, 63, 70, 0.4);
+	--border-card: rgba(39, 39, 42, 0.6);
+	--border-focus: rgba(45, 212, 191, 0.5);
+
+	/* Alias for compatibility */
+	--color-border-medium: rgba(63, 63, 70, 0.4);
+
+	/* ── Text ───────────────────────────────────────────────────────────────── */
+	--text-primary: #ffffff;
+	--text-secondary: #a1a1aa;
+	--text-tertiary: #71717a;
+	--text-muted: #52525b;
+
+	/* Alias for compatibility */
+	--color-text-primary: var(--text-primary);
+
+	/* ── Accent Colors ──────────────────────────────────────────────────────── */
+	--color-teal: #2dd4bf;
+	--color-amber: #fbbf24;
+	--color-rose: #fb7185;
+	--color-emerald: #34d399;
+	--color-purple: #a78bfa;
+	--color-sky: #38bdf8;
+
+	/* Legacy aliases — some components still reference these */
+	--color-primary-500: var(--color-teal);
+	--color-primary-50: rgba(45, 212, 191, 0.1);
+	--color-primary-100: rgba(45, 212, 191, 0.15);
+	--color-primary-200: rgba(45, 212, 191, 0.2);
+	--color-brand-gold: var(--color-teal);
+
+	/* ── Radius ─────────────────────────────────────────────────────────────── */
+	--radius-sm: 0.5rem;
+	--radius-md: 0.75rem;
+	--radius-lg: 1rem;
+}

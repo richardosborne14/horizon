@@ -1,0 +1,74 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# SvelteKit build
+.svelte-kit/
+build/
+dist/
+
+# Environment files — NEVER commit these
+# WHY catch-all: specific patterns (.env.demo, .env.production etc.) are too easy to bypass
+# with new filenames like .env.bak, .env.demo.bak. A catch-all is safer.
+.env
+.env.*
+!.env.example
+
+# Database backups (created by scripts/backup-db.sh)
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+.Python
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+dist/
+*.dist-info/
+
+# Alembic — don't ignore versions, they're migrations
+# (nothing to ignore here)
+
+# Docker volumes (local data)
+postgres-data/
+caddy-data/
+caddy-config/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Testing
+coverage/
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Secrets / keys — belt and suspenders
+*.pem
+*.key
+*.cert
+*.p12
+
+# Misc
+.cache/
+tmp/
+temp/

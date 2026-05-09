@@ -1,0 +1,59 @@
+# Demo environment overrides for docker-compose.yml + docker-compose.prod.yml
+#
+# Usage (on the demo server):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.demo.yml up -d
+#
+# WHY a separate demo file (not just prod)?
+#   - Different domain in Caddy config (digitalbricks.io vs communaute-coiffure.fr)
+#   - Different PUBLIC_API_URL for the frontend
+#   - DB password via env var (not hardcoded dev value)
+#   - APP_ENV=staging (keeps API docs accessible for testing)
+
+services:
+  # ── PostgreSQL — use strong password from .env ─────────────────────────────
+  db:
+    environment:
+      POSTGRES_USER: comcoi
+      # POSTGRES_PASSWORD must be set in .env on the server
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: comcoi
+
+  # ── FastAPI Backend — demo-specific env overrides ─────────────────────────
+  backend:
+    environment:
+      APP_ENV: staging
+      # Override DATABASE_URL to use the env-var DB password
+      # (docker-compose.yml hardcodes the dev password — this overrides it)
+      DATABASE_URL: postgresql+asyncpg://comcoi:${POSTGRES_PASSWORD}@db:5432/comcoi
+      # CORS: allow requests from the demo domain
+      FRONTEND_URL: https://comcoi-demo.digitalbricks.io
+
+  # ── SvelteKit Frontend — demo-specific env overrides ─────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # PUBLIC_STRIPE_PUBLISHABLE_KEY is baked into the JS bundle at compile time
+        # via $env/static/public — runtime `environment:` values do NOT reach it.
+        # WHY :?: fails loudly if key is absent in .env rather than silently baking
+        # the Dockerfile placeholder (which would cause Stripe 401s in production).
+        PUBLIC_STRIPE_PUBLISHABLE_KEY: ${STRIPE_PUBLISHABLE_KEY:?STRIPE_PUBLISHABLE_KEY must be set in .env}
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      # PUBLIC_API_URL: used by client-side browser fetches
+      # WHY full URL: in production build PUBLIC_* vars must point to the
+      # real domain since there's no Vite dev server to rewrite them
+      PUBLIC_API_URL: https://comcoi-demo.digitalbricks.io/api
+      # BACKEND_URL: runtime var used by hooks.server.ts SSR proxy
+      # Docker internal network — never changes between demo/prod
+      BACKEND_URL: http://backend:8000
+
+  # ── Caddy — use the demo domain Caddyfile ─────────────────────────────────
+  caddy:
+    volumes:
+      - ./caddy/Caddyfile.demo:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+    profiles: []
+    restart: always
