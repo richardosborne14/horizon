@@ -66,7 +66,7 @@ def get_kid_defaults(birth_date: date) -> list[CostEvent]:
         label="Crèche / Garde d'enfant",
         from_age=0,
         to_age=entry_age - 1,
-        amount=Decimal("500.00"),
+        amount=Decimal("300.00"),
         frequency="monthly",
         source="default",
     ))
@@ -110,7 +110,7 @@ def get_kid_defaults(birth_date: date) -> list[CostEvent]:
         label="Cantine collège",
         from_age=11,
         to_age=15,
-        amount=Decimal("150.00"),
+        amount=Decimal("100.00"),
         frequency="monthly",
         source="default",
     ))
@@ -132,7 +132,7 @@ def get_kid_defaults(birth_date: date) -> list[CostEvent]:
         label="Cantine lycée",
         from_age=15,
         to_age=18,
-        amount=Decimal("150.00"),
+        amount=Decimal("100.00"),
         frequency="monthly",
         source="default",
     ))
@@ -346,55 +346,57 @@ def get_car_defaults(
     replace_cost: Decimal = Decimal("18000.00"),
 ) -> list[CostEvent]:
     """
-    Generate default cost events for a car.
+    Generate default cost events for a car using the rolling replacement model.
 
-    - Running costs (assurance, fuel, maintenance) for the full cycle
-    - CT (contrôle technique) every 2 years starting at age 4
-    - Replacement event at cycle end
+    The entity represents "I own a car" (perpetual ownership) rather than
+    "I own this specific car." Ongoing costs (insurance, fuel, maintenance)
+    use to_age=99 so they never expire. Replacement events and CT inspections
+    are pre-generated at replace_cycle intervals through entity age 40.
+
+    Sprint 6 (TASK-6.4): Fixed the bug where to_age=replace_cycle caused cars
+    older than the cycle to contribute zero to the projection.
     """
     fuel = CAR_FUEL_COSTS.get(fuel_type, "1000.00")
     maintenance = CAR_MAINTENANCE_COSTS.get(fuel_type, "400.00")
     events = []
 
-    # Assurance (0 → cycle)
+    # Assurance (0 → 99 — perpetual ownership)
     events.append(CostEvent(
         id="c-insurance",
         label="Assurance auto",
         from_age=0,
-        to_age=replace_cycle,
+        to_age=99,
         amount=Decimal("600.00"),
         frequency="annual",
         source="default",
     ))
 
-    # Carburant (0 → cycle)
+    # Carburant (0 → 99)
     events.append(CostEvent(
         id="c-fuel",
         label="Carburant / Énergie",
         from_age=0,
-        to_age=replace_cycle,
+        to_age=99,
         amount=Decimal(fuel),
         frequency="annual",
         source="default",
     ))
 
-    # Entretien courant (0 → cycle)
+    # Entretien courant (0 → 99)
     events.append(CostEvent(
         id="c-maintenance",
         label="Entretien courant (révisions, pneus, freins)",
         from_age=0,
-        to_age=replace_cycle,
+        to_age=99,
         amount=Decimal(maintenance),
         frequency="annual",
         source="default",
     ))
 
-    # CT events — every 2 years starting at age 4 until cycle
-    # Generated as individual "once" events for simplicity
-    ct_start = 4
-    ct_age = ct_start
+    # CT events — every 2 years starting at age 4, through age 40
+    ct_age = 4
     ct_count = 1
-    while ct_age <= replace_cycle:
+    while ct_age <= 40:
         events.append(CostEvent(
             id=f"c-ct-{ct_count}",
             label=f"Contrôle technique à {ct_age} ans",
@@ -407,16 +409,21 @@ def get_car_defaults(
         ct_age += 2
         ct_count += 1
 
-    # Remplacement véhicule (at cycle end)
-    events.append(CostEvent(
-        id="c-replace",
-        label="Remplacement véhicule",
-        from_age=replace_cycle,
-        to_age=replace_cycle,
-        amount=replace_cost,
-        frequency="once",
-        source="default",
-    ))
+    # Replacement events at replace_cycle intervals through age 40
+    replacement_age = replace_cycle
+    replacement_count = 1
+    while replacement_age <= 40:
+        events.append(CostEvent(
+            id=f"c-replace-{replacement_count}",
+            label=f"Remplacement véhicule (tous les {replace_cycle} ans)",
+            from_age=replacement_age,
+            to_age=replacement_age,
+            amount=replace_cost,
+            frequency="once",
+            source="default",
+        ))
+        replacement_age += replace_cycle
+        replacement_count += 1
 
     return events
 

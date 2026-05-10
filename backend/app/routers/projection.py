@@ -9,6 +9,7 @@ import logging
 import time
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -24,6 +25,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.models.investment import InvestmentAllocation
 from app.models.life_entity import LifeEntity
+from app.models.loan import Loan
 from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.recurring_expense import RecurringExpense
@@ -31,8 +33,14 @@ from app.models.user import User
 from app.schemas.projection import (
     CompareResponse,
     DeltaOut,
+    ExpenseTimelineResponse,
+    LifecycleAlertOut,
+    LifecycleAlertsResponse,
     ProjectionResponse,
     ScenarioCompareRequest,
+    SensitivityParamOut,
+    SensitivityResponse,
+    YearDrillDownResponse,
     build_projection_response,
 )
 
@@ -175,6 +183,26 @@ async def _assemble_input(
             "monthly": a.monthly_contribution,
         }
 
+    # Loans (Sprint 6)
+    loans_result = await db.execute(
+        select(Loan)
+        .where(
+            Loan.user_id == user_id,
+            Loan.is_active == True,
+        )
+    )
+    loans_list: list[dict] = []
+    for loan in loans_result.scalars().all():
+        loans_list.append(
+            {
+                "label": loan.label,
+                "monthly_payment": float(loan.monthly_payment),
+                "start_date": str(loan.start_date),
+                "end_date": str(loan.end_date) if loan.end_date else None,
+                "insurance_monthly": float(loan.insurance_monthly or Decimal("0")),
+            }
+        )
+
     # Projects
     projects_list: list[dict] = []
     for p in projects_result.scalars().all():
@@ -239,6 +267,7 @@ async def _assemble_input(
         status_change_enabled=profile.status_change_enabled,
         status_change_year=profile.status_change_year,
         status_change_savings=profile.status_change_savings,
+        loans=loans_list,
         monthly_revenue_goal=profile.monthly_revenue_goal,
     )
 
@@ -604,3 +633,831 @@ async def compare_scenarios(
     )
 
     return CompareResponse(base=base_resp, scenario=sc_resp, delta=delta)
+
+
+# ── Expense timeline endpoint (TASK-6.6) ──────────────────────────────────
+
+
+@router.get("/expense-timeline", response_model=ExpenseTimelineResponse)
+async def get_expense_timeline(
+    scale: str = Query(
+        default="moderate",
+        description="Inflation scale: optimistic, moderate, or pessimistic",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a year-by-year expense breakdown with key change events.
+
+    Computes the full projection, then extracts expense categories per year
+    (monthly values) and detects lifecycle events:
+      - Loan terminations
+      - Kid cost phase transitions (independence)
+      - Pet end-of-life
+      - Car replacement years (large one-time spikes)
+
+    This powers the stacked area chart on the Charges/Runway page.
+    """
+    from app.schemas.projection import (
+        ExpenseTimelineEvent,
+        ExpenseTimelineYear,
+        ExpenseTimelineResponse,
+    )
+
+    # Validate scale
+    if scale not in INFLATION_SCALES:
+        valid = ", ".join(INFLATION_SCALES.keys())
+        raise HTTPException(
+            status_code=422,
+            detail=f"Échelle inconnue: {scale!r}. Valides: {valid}",
+        )
+
+    try:
+        inp = await _assemble_input(str(current_user.id), scale, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to assemble projection input for expense timeline")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors de la préparation des données",
+        ) from exc
+
+    try:
+        timeline = project_timeline(inp)
+    except Exception as exc:
+        logger.exception("Projection engine failed for expense timeline")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur de calcul de la projection",
+        ) from exc
+
+    # ── Build year-by-year expense breakdown ──────────────────────────
+    timeline_out: list[ExpenseTimelineYear] = []
+    previous_total: Decimal | None = None
+
+    for entry in timeline:
+        # Convert annual amounts to monthly
+        base_m = _to_monthly(entry.base_expenses)
+        loan_m = _to_monthly(getattr(entry, "loan_expenses", Decimal("0")))
+        kid_m = _to_monthly(entry.kid_expenses)
+        pet_m = _to_monthly(entry.pet_expenses)
+        car_m = _to_monthly(entry.car_expenses)
+        tech_m = _to_monthly(entry.tech_expenses)
+        rec_m = _to_monthly(entry.recurring_expenses)
+        proj_m = _to_monthly(entry.project_expenses)
+
+        total_m = base_m + loan_m + kid_m + pet_m + car_m + tech_m + rec_m + proj_m
+
+        # Gather events for this year
+        events: list[str] = []
+        if loan_m > 0:
+            events.append("Crédits en cours")
+        if kid_m > 0:
+            events.append("Enfants à charge")
+        if entry.is_retirement:
+            events.append("Retraite")
+        if car_m > 0 and any(
+            evt.get("entity_type") == "car" for evt in inp.life_entities
+        ):
+            events.append("Véhicule actif")
+
+        # Compute delta vs previous year
+        delta = Decimal("0")
+        if previous_total is not None:
+            delta = total_m - previous_total
+        previous_total = total_m
+
+        timeline_out.append(
+            ExpenseTimelineYear(
+                year=entry.year,
+                age=entry.age,
+                base_expenses_monthly=str(base_m.quantize(Decimal("0.01"))),
+                loan_payments_monthly=str(loan_m.quantize(Decimal("0.01"))),
+                kid_expenses_monthly=str(kid_m.quantize(Decimal("0.01"))),
+                pet_expenses_monthly=str(pet_m.quantize(Decimal("0.01"))),
+                car_expenses_monthly=str(car_m.quantize(Decimal("0.01"))),
+                tech_expenses_monthly=str(tech_m.quantize(Decimal("0.01"))),
+                recurring_monthly=str(rec_m.quantize(Decimal("0.01"))),
+                project_expenses_monthly=str(proj_m.quantize(Decimal("0.01"))),
+                total_monthly=str(total_m.quantize(Decimal("0.01"))),
+                events=events,
+                delta_vs_previous=str(delta.quantize(Decimal("0.01"))),
+            )
+        )
+
+    # ── Detect key lifecycle events ───────────────────────────────────
+    key_events = _detect_expense_events(timeline, inp)
+
+    return ExpenseTimelineResponse(timeline=timeline_out, key_events=key_events)
+
+
+def _to_monthly(annual: Decimal) -> Decimal:
+    """Convert an annual Decimal amount to monthly."""
+    if annual is None or (hasattr(annual, "__len__") and len(str(annual)) == 0):
+        return Decimal("0")
+    d = Decimal(str(annual))
+    return d / Decimal("12")
+
+
+def _detect_expense_events(
+    timeline: list[Any],
+    inp: Any,  # ProjectionInput
+) -> list[dict[str, Any]]:
+    """Detect key expense change events from the projection timeline.
+
+    Looks for:
+      - Loan terminations (payment drops to zero)
+      - Kid cost phase transitions (last cost event ending = independence)
+      - Pet end-of-life (last cost event)
+      - Car replacement years (large one-time spikes)
+
+    Args:
+        timeline: Full projection timeline.
+        inp: The assembled ProjectionInput.
+
+    Returns:
+        List of ExpenseTimelineEvent dicts sorted by year.
+    """
+    from decimal import Decimal
+
+    key_events: list[dict[str, Any]] = []
+
+    # ── Loan termination events ──────────────────────────────────
+    if inp.loans:
+        for loan in inp.loans:
+            label = loan.get("label", "Crédit")
+            monthly_payment = Decimal(str(loan.get("monthly_payment", 0)))
+            insurance = Decimal(str(loan.get("insurance_monthly", 0)))
+            total_monthly = monthly_payment + insurance
+
+            if total_monthly <= 0:
+                continue
+
+            end_date_str = loan.get("end_date")
+            if end_date_str is None:
+                continue
+
+            # Parse end date
+            if isinstance(end_date_str, str):
+                end_date = date.fromisoformat(end_date_str)
+            else:
+                end_date = end_date_str
+
+            end_year = end_date.year
+
+            # The loan is active until end_year inclusive, ends the year after
+            termination_year = end_year + 1
+            if termination_year >= inp.current_year and termination_year <= (
+                inp.current_year + len(timeline)
+            ):
+                key_events.append(
+                    {
+                        "year": termination_year,
+                        "event": f"✅ {label} terminé",
+                        "impact_monthly": str((-total_monthly).quantize(Decimal("0.01"))),
+                        "category": "loan_end",
+                    }
+                )
+
+    # ── Kid cost phase transitions ────────────────────────────────
+    for entity in inp.life_entities:
+        if entity.get("entity_type") != "kid":
+            continue
+        name = entity.get("entity_name", "Enfant")
+        cost_events = entity.get("cost_events", [])
+        if not cost_events:
+            continue
+
+        # Find the event with the highest to_age — that's the "last" cost event
+        max_to_age = max(
+            int(evt.get("to_age", 0)) for evt in cost_events
+        )
+        entity_start_age = entity.get("entity_age_at_start", 0)
+
+        # The last year of kid costs is when entity age reaches max_to_age
+        # That year in the projection: start_age + y = max_to_age => y = max_to_age - start_age
+        last_cost_year_index = max_to_age - entity_start_age
+        if last_cost_year_index < 0:
+            continue
+
+        independence_year = inp.current_year + last_cost_year_index + 1  # year AFTER last costs
+
+        # Compute the kid monthly expense in the last year for impact estimation
+        if 0 <= last_cost_year_index < len(timeline):
+            last_cost_entry = timeline[last_cost_year_index]
+            kid_monthly = _to_monthly(last_cost_entry.kid_expenses)
+            if kid_monthly > 0:
+                key_events.append(
+                    {
+                        "year": independence_year,
+                        "event": f"{name} indépendant(e)",
+                        "impact_monthly": str((-kid_monthly).quantize(Decimal("0.01"))),
+                        "category": "kid_independence",
+                    }
+                )
+
+    # ── Pet end-of-life ───────────────────────────────────────────
+    for entity in inp.life_entities:
+        if entity.get("entity_type") != "pet":
+            continue
+        name = entity.get("entity_name", "Animal")
+        cost_events = entity.get("cost_events", [])
+        if not cost_events:
+            continue
+
+        max_to_age = max(
+            int(evt.get("to_age", 0)) for evt in cost_events
+        )
+        entity_start_age = entity.get("entity_age_at_start", 0)
+        last_cost_year_index = max_to_age - entity_start_age
+        if last_cost_year_index < 0:
+            continue
+
+        eol_year = inp.current_year + last_cost_year_index + 1
+
+        if 0 <= last_cost_year_index < len(timeline):
+            last_cost_entry = timeline[last_cost_year_index]
+            pet_monthly = _to_monthly(last_cost_entry.pet_expenses)
+            if pet_monthly > 0:
+                key_events.append(
+                    {
+                        "year": eol_year,
+                        "event": f"{name} (fin de vie estimée)",
+                        "impact_monthly": str((-pet_monthly).quantize(Decimal("0.01"))),
+                        "category": "pet_eol",
+                    }
+                )
+
+    # ── Car replacement years (large one-time spikes) ──────────────
+    CAR_REPLACEMENT_THRESHOLD = Decimal("5000")  # One-time events above 5k€
+    for i, entry in enumerate(timeline):
+        car_annual = entry.car_expenses
+        if car_annual <= CAR_REPLACEMENT_THRESHOLD:
+            # Check if there's a dramatic spike vs previous year
+            if i > 0:
+                prev_car = timeline[i - 1].car_expenses
+                if car_annual - prev_car > CAR_REPLACEMENT_THRESHOLD:
+                    extra = car_annual - prev_car
+                    key_events.append(
+                        {
+                            "year": entry.year,
+                            "event": "Remplacement véhicule prévu",
+                            "impact_monthly": str(
+                                _to_monthly(extra).quantize(Decimal("0.01"))
+                            ),
+                            "category": "car_replacement",
+                        }
+                    )
+        else:
+            # Already above threshold — this is a replacement year
+            key_events.append(
+                {
+                    "year": entry.year,
+                    "event": "Remplacement véhicule prévu",
+                    "impact_monthly": str(
+                        _to_monthly(car_annual).quantize(Decimal("0.01"))
+                    ),
+                    "category": "car_replacement",
+                }
+            )
+
+    # Sort by year
+    key_events.sort(key=lambda e: e["year"])
+
+    # Limit to most important (no spam)
+    return key_events[:20]
+
+
+# ── Sensitivity analysis endpoint (TASK-6.7) ─────────────────────────────
+
+
+@router.get("/sensitivity", response_model=SensitivityResponse)
+async def get_sensitivity_analysis(
+    scale: str = Query(
+        default="moderate",
+        description="Inflation scale: optimistic, moderate, or pessimistic",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run sensitivity analysis on the user's projection.
+
+    Tests how changes to key financial levers affect the outcome:
+      - Saving 200€/mois more
+      - Spending 300€/mois less
+      - Growing CA 2% faster
+      - Working 2 more years
+      - Redirecting 50% savings to PEA
+      - Redirecting freed loan payments to savings
+
+    Returns ranked parameters by impact on final wealth.
+
+    Each lever is tested by re-running the full projection engine
+    (~7 passes, <1 second total).
+    """
+    from app.calculations.sensitivity import run_sensitivity_analysis
+    from app.calculations.sensitivity import SensitivityResult
+
+    # Validate scale
+    if scale not in INFLATION_SCALES:
+        valid = ", ".join(INFLATION_SCALES.keys())
+        raise HTTPException(
+            status_code=422,
+            detail=f"Échelle inconnue: {scale!r}. Valides: {valid}",
+        )
+
+    t_start = time.perf_counter()
+
+    try:
+        inp = await _assemble_input(str(current_user.id), scale, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to assemble projection input for sensitivity")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors de la préparation des données",
+        ) from exc
+
+    try:
+        results: list[SensitivityResult] = run_sensitivity_analysis(inp, scale)
+    except Exception as exc:
+        logger.exception("Sensitivity analysis failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors de l'analyse de sensibilité",
+        ) from exc
+
+    # Build base wealth and exhaustion
+    base_timeline = project_timeline(inp)
+    base_summary = compute_summary(base_timeline)
+    base_wealth = base_summary.get("final_wealth", "0")
+    base_exhaustion = base_summary.get("wealth_exhaustion_age")
+
+    # Build response parameters
+    params_out = [
+        SensitivityParamOut(
+            parameter=r.parameter,
+            label=r.label,
+            description=r.description,
+            base_value_display=r.base_value_display,
+            test_value_display=r.test_value_display,
+            base_wealth=str(r.base_wealth),
+            test_wealth=str(r.test_wealth),
+            delta_wealth=str(r.delta_wealth),
+            delta_pct=str(r.delta_pct),
+            delta_exhaustion=r.delta_exhaustion,
+            rank=r.rank,
+        )
+        for r in results
+    ]
+
+    # Generate narrative for top lever
+    top_narrative = ""
+    if results:
+        top = results[0]
+        top_narrative = (
+            f"Le levier le plus puissant est « {top.label.lower()} ». "
+            f"Cela ajouterait {top.delta_wealth:.0f}€ à votre patrimoine final "
+            f"(+{top.delta_pct}%), soit plus que toute autre action individuelle."
+        )
+
+    elapsed_ms = (time.perf_counter() - t_start) * 1000
+    logger.info(
+        "Sensitivity analysis user=%s scale=%s params=%d elapsed=%.1fms",
+        current_user.id,
+        scale,
+        len(results),
+        elapsed_ms,
+    )
+
+    return SensitivityResponse(
+        base_wealth_at_retirement=str(base_wealth),
+        base_exhaustion_age=base_exhaustion,
+        parameters=params_out,
+        scale=scale,
+        top_lever_narrative=top_narrative,
+    )
+
+
+# ── Lifecycle alerts endpoint (TASK-6.9) ────────────────────────────────
+
+
+@router.get("/alerts", response_model=LifecycleAlertsResponse)
+async def get_lifecycle_alerts(
+    scale: str = Query(
+        default="moderate",
+        description="Inflation scale: optimistic, moderate, or pessimistic",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return time-specific lifecycle alerts from the projection.
+
+    Generates alerts for:
+      - Loan terminations (with savings redirection estimate)
+      - Kid independence milestones
+      - Car replacement due within 2 years
+      - Investment ceiling approaching
+      - Retirement countdown (10, 5, 3, 1 years)
+      - Pet end-of-life approaching
+      - Expense peak year identification
+    """
+    from app.calculations.insights import generate_lifecycle_alerts
+
+    # Validate scale
+    if scale not in INFLATION_SCALES:
+        valid = ", ".join(INFLATION_SCALES.keys())
+        raise HTTPException(
+            status_code=422,
+            detail=f"Échelle inconnue: {scale!r}. Valides: {valid}",
+        )
+
+    try:
+        inp = await _assemble_input(str(current_user.id), scale, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to assemble projection input for alerts")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors de la préparation des données",
+        ) from exc
+
+    try:
+        timeline = project_timeline(inp)
+    except Exception as exc:
+        logger.exception("Projection engine failed for alerts")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur de calcul de la projection",
+        ) from exc
+
+    # Build inputs for alerts
+    allocations_list = [
+        {
+            "vehicle_key": vk,
+            "balance": float(alloc.get("balance", Decimal("0"))),
+            "monthly": float(alloc.get("monthly", Decimal("0"))),
+        }
+        for vk, alloc in inp.allocations.items()
+    ]
+
+    loan_dicts = inp.loans  # Already list of dicts
+    entity_dicts = inp.life_entities  # Already list of dicts
+
+    profile_data = {
+        "monthly_gross": float(inp.monthly_gross),
+        "growth_rate": float(inp.growth_rate),
+        "target_age": inp.target_age,
+        "current_age": inp.current_age,
+    }
+
+    alerts = generate_lifecycle_alerts(
+        timeline=timeline,
+        summary={},  # summary not needed for lifecycle alerts
+        loans=loan_dicts,
+        life_entities=entity_dicts,
+        allocations=allocations_list,
+        profile_data=profile_data,
+    )
+
+    alerts_out = [
+        LifecycleAlertOut(
+            id=a.id,
+            alert_type=a.alert_type,
+            year=a.year,
+            age=a.age,
+            severity=a.severity,
+            title=a.title,
+            description=a.description,
+            impact_monthly=str(a.impact_monthly) if a.impact_monthly is not None else None,
+            impact_wealth=str(a.impact_wealth) if a.impact_wealth is not None else None,
+            action_label=a.action_label,
+            action_link=a.action_link,
+        )
+        for a in alerts
+    ]
+
+    return LifecycleAlertsResponse(alerts=alerts_out, total=len(alerts_out))
+
+
+# ── Year drill-down endpoint (TASK-6.10) ────────────────────────────────
+
+
+@router.get("/year/{year}", response_model=YearDrillDownResponse)
+async def get_year_drill_down(
+    year: int,
+    scale: str = Query(
+        default="moderate",
+        description="Inflation scale: optimistic, moderate, or pessimistic",
+    ),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a complete breakdown for a single projection year.
+
+    Includes every income source, expense line, life entity cost event,
+    loan status, and investment contribution/return for that year.
+    Also generates a natural-language explanation of the year's key drivers.
+    """
+    from app.schemas.projection import (
+        DrillDownLifeEntityEvent,
+        DrillDownLifeEntity,
+        DrillDownIncome,
+        DrillDownCharges,
+        DrillDownExpenses,
+        DrillDownLifeEntitiesTotal,
+        DrillDownLoan,
+        DrillDownInvestments,
+        DrillDownSummary,
+        YearDrillDownResponse,
+    )
+
+    if scale not in INFLATION_SCALES:
+        valid = ", ".join(INFLATION_SCALES.keys())
+        raise HTTPException(
+            status_code=422,
+            detail=f"Échelle inconnue: {scale!r}. Valides: {valid}",
+        )
+
+    try:
+        inp = await _assemble_input(str(current_user.id), scale, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to assemble projection input for drill-down")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors de la préparation des données",
+        ) from exc
+
+    try:
+        timeline = project_timeline(inp)
+    except Exception as exc:
+        logger.exception("Projection engine failed for drill-down")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur de calcul de la projection",
+        ) from exc
+
+    # Find the requested year
+    idx = year - inp.current_year
+    if idx < 0 or idx >= len(timeline):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Année {year} hors de la période de projection",
+        )
+
+    entry = timeline[idx]
+    is_retirement = getattr(entry, "is_retirement", False)
+
+    # ── Income breakdown ──────────────────────────────────────────────
+    growth_pct = f"{float(inp.growth_rate) * 100:.1f}%"
+    income = DrillDownIncome(
+        gross_ca=str(entry.gross_annual),
+        growth_rate_applied=growth_pct,
+        caf=str(entry.caf_annual),
+        cesu_credit=str(
+            Decimal(str(inp.cesu_annual)) * Decimal("0.5")
+            if not is_retirement else Decimal("0")
+        ),
+        charity_credit=str(
+            Decimal(str(inp.charity_annual)) * Decimal("0.66")
+            if not is_retirement else Decimal("0")
+        ),
+        project_income=str(entry.project_income),
+        pension=str(entry.pension_annual),
+        total=str(entry.total_income),
+    )
+
+    # ── Charges breakdown ─────────────────────────────────────────────
+    charges = DrillDownCharges(
+        ae_cotisations=str(entry.charges),
+        ae_rate=str(entry.ae_rate * Decimal("100")) + "%",
+        cfe=str(entry.cfe),
+        total=str(entry.charges + entry.cfe),
+    )
+
+    # ── Expenses breakdown ────────────────────────────────────────────
+    inflation_scale = INFLATION_SCALES.get(scale, {})
+    inflation_rate = Decimal(str(inflation_scale.get("inflation", "0.02")))
+    years_from_start = year - inp.current_year
+    inflation_factor = (Decimal("1") + inflation_rate) ** max(0, years_from_start)
+    base_m = entry.base_expenses / Decimal("12")
+    expenses = DrillDownExpenses(
+        base_total_monthly=str(base_m.quantize(Decimal("0.01"))),
+        base_total_annual=str(entry.base_expenses),
+        inflation_factor=f"{float(inflation_factor):.3f} ({float(inflation_rate) * 100:.1f}%/an × {years_from_start} ans)",
+    )
+
+    # ── Life entities breakdown ───────────────────────────────────────
+    entities_out: list[DrillDownLifeEntity] = []
+    kids_total = Decimal("0")
+    pets_total = Decimal("0")
+    cars_total = Decimal("0")
+    tech_total = Decimal("0")
+
+    for entity in inp.life_entities:
+        etype = entity.get("entity_type", "")
+        ename = entity.get("entity_name", "Entité")
+        estate_age = entity.get("entity_age_at_start", 0)
+        cost_events = entity.get("cost_events", [])
+        entity_age_this_year = estate_age + idx
+
+        active_events: list[DrillDownLifeEntityEvent] = []
+        subtotal = Decimal("0")
+        notes_parts = []
+
+        for evt in cost_events:
+            from_age = int(evt.get("from_age", 0))
+            to_age = int(evt.get("to_age", 0))
+            amount = Decimal(str(evt.get("amount", 0)))
+            freq = evt.get("frequency", "annual")
+
+            if from_age <= entity_age_this_year <= to_age:
+                # Inflate cost
+                inflated = amount * inflation_factor
+                if freq == "monthly":
+                    annual_val = inflated * Decimal("12")
+                elif freq == "once":
+                    annual_val = inflated
+                else:  # annual
+                    annual_val = inflated
+
+                subtotal += annual_val
+                active_events.append(
+                    DrillDownLifeEntityEvent(
+                        label=evt.get("label", ""),
+                        amount=str(inflated.quantize(Decimal("0.01"))),
+                        frequency=freq,
+                        annual=str(annual_val.quantize(Decimal("0.01"))),
+                    )
+                )
+
+        # Auto-generate note for notable ages
+        if etype == "kid":
+            if entity_age_this_year == 18:
+                notes_parts.append("Année du permis et peut-être première voiture")
+            elif entity_age_this_year == 22:
+                notes_parts.append("Fin des études supérieures")
+        elif etype == "pet" and entity_age_this_year >= 10:
+            notes_parts.append("Soins renforcés (vieillesse)")
+        elif etype == "car" and entity_age_this_year >= 8:
+            notes_parts.append("Véhicule vieillissant — entretien accru")
+
+        if active_events:
+            entities_out.append(
+                DrillDownLifeEntity(
+                    name=ename,
+                    type=etype,
+                    age=entity_age_this_year,
+                    events_active=active_events,
+                    subtotal=str(subtotal.quantize(Decimal("0.01"))),
+                    note=". ".join(notes_parts) if notes_parts else "",
+                )
+            )
+
+        # Accumulate per-type totals
+        if etype == "kid":
+            kids_total += subtotal
+        elif etype == "pet":
+            pets_total += subtotal
+        elif etype == "car":
+            cars_total += subtotal
+        elif etype == "tech":
+            tech_total += subtotal
+
+    life_entities_total = DrillDownLifeEntitiesTotal(
+        kids=str(kids_total),
+        pets=str(pets_total),
+        cars=str(cars_total),
+        tech=str(tech_total),
+        total=str(kids_total + pets_total + cars_total + tech_total),
+    )
+
+    # ── Loans breakdown ────────────────────────────────────────────────
+    loans_out: list[DrillDownLoan] = []
+    loan_year_date = date(year, 1, 1)
+    for loan in inp.loans:
+        label = loan.get("label", "Crédit")
+        monthly = Decimal(str(loan.get("monthly_payment", 0)))
+        insurance = Decimal(str(loan.get("insurance_monthly", 0)))
+        total_m = monthly + insurance
+
+        end_date_str = loan.get("end_date")
+        end_date = None
+        if end_date_str:
+            if isinstance(end_date_str, str):
+                end_date = date.fromisoformat(end_date_str)
+            else:
+                end_date = end_date_str
+
+        if end_date and end_date < loan_year_date:
+            status = "ended"
+            total_m = Decimal("0")
+        elif end_date and end_date.year == year:
+            status = "active"  # Last year
+        else:
+            status = "active"
+
+        if total_m > Decimal("0") or status == "ended":
+            loans_out.append(
+                DrillDownLoan(
+                    label=label,
+                    monthly=str(total_m),
+                    annual=str(total_m * Decimal("12")),
+                    status=status,
+                    ends=str(end_date) if end_date else None,
+                )
+            )
+
+    # ── Investments breakdown ──────────────────────────────────────────
+    contribs: dict[str, str] = {}
+    rets: dict[str, str] = {}
+    balances: dict[str, str] = {}
+    i_notes: list[str] = []
+
+    # Estimate per-vehicle contributions and returns from totals
+    total_contributed = Decimal(str(entry.year_invested))
+    total_returned = Decimal(str(entry.year_returns))
+    total_balance = Decimal(str(entry.total_wealth))
+
+    if inp.allocations:
+        total_monthly = sum(
+            alloc.get("monthly", Decimal("0")) for alloc in inp.allocations.values()
+        )
+        if total_monthly > Decimal("0"):
+            for vk, alloc in inp.allocations.items():
+                monthly = alloc.get("monthly", Decimal("0"))
+                share = monthly / total_monthly if total_monthly > Decimal("0") else Decimal("0")
+                contribs[vk] = str((total_contributed * share).quantize(Decimal("0.01")))
+                rets[vk] = str((total_returned * share).quantize(Decimal("0.01")))
+
+                # Estimate balance from existing + cumulative
+                existing = alloc.get("balance", Decimal("0"))
+                # Simple projection
+                bal = existing + (monthly * Decimal("12") * Decimal(str(max(1, idx + 1)))) * Decimal("1.05")
+                balances[vk] = str(bal.quantize(Decimal("0.01")))
+
+    from app.calculations.vehicles import VEHICLE_SPECS
+    for vk, alloc in inp.allocations.items():
+        spec = VEHICLE_SPECS.get(vk, {})
+        ceiling = Decimal(str(spec.get("ceiling", 0)))
+        if ceiling > Decimal("0") and balances.get(vk):
+            bal = Decimal(balances[vk])
+            if bal >= ceiling * Decimal("0.9"):
+                i_notes.append(f"{spec.get('label', vk)} proche du plafond")
+
+    investments = DrillDownInvestments(
+        contributions=contribs,
+        returns=rets,
+        balances=balances,
+        notes=i_notes,
+    )
+
+    # ── Summary with auto-generated explanation ───────────────────────
+    net_val = entry.total_income - entry.total_outgoing
+    net_status = "surplus" if net_val >= Decimal("0") else "deficit"
+
+    # Generate explanation
+    drivers = []
+    if kids_total > Decimal("5000"):
+        drivers.append(f"{len([e for e in inp.life_entities if e.get('entity_type') == 'kid'])} enfants à charge")
+    if getattr(entry, "kid_expenses", Decimal("0")) > Decimal("10000"):
+        drivers.append("pic de dépenses enfants")
+    if any(l.status == "ended" for l in loans_out if hasattr(l, "status")):
+        drivers.append("crédit terminé")
+    car_spike = getattr(entry, "car_expenses", Decimal("0"))
+    if car_spike > Decimal("5000"):
+        drivers.append("remplacement véhicule")
+    if getattr(entry, "project_income", Decimal("0")) > Decimal("0"):
+        drivers.append("revenus de projet")
+
+    if not drivers:
+        drivers.append("année normale")
+
+    exp = f"Année {'chargée' if net_val < Decimal('0') else 'normale'}: {', '.join(drivers[:3])}."
+
+    summary = DrillDownSummary(
+        total_income=str(entry.total_income),
+        total_outgoing=str(entry.total_outgoing),
+        net=str(net_val),
+        net_status=net_status,
+        explanation=exp,
+    )
+
+    return YearDrillDownResponse(
+        year=entry.year,
+        age=entry.age,
+        phase="post-retirement" if is_retirement else "accumulation",
+        income=income,
+        charges=charges,
+        expenses=expenses,
+        life_entities=entities_out,
+        life_entities_total=life_entities_total,
+        loans=loans_out,
+        investments=investments,
+        summary=summary,
+    )

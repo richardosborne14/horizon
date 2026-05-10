@@ -185,10 +185,40 @@ class TestPetDefaults:
 
 
 class TestCarDefaults:
-    """Car defaults with CT events and fuel-type variations."""
+    """Car defaults with CT events, fuel-type variations, and rolling replacement (Sprint 6)."""
 
-    def test_ct_events_at_correct_ages(self):
-        """CT events should appear at ages 4, 6, 8 for an 8-year cycle."""
+    def test_ongoing_costs_to_age_99(self):
+        """Ongoing costs (insurance, fuel, maintenance) should run to age 99."""
+        events = get_car_defaults(
+            fuel_type="petrol",
+            acquisition_date=date(2022, 1, 1),
+            replace_cycle=8,
+        )
+        ongoing_ids = {"c-insurance", "c-fuel", "c-maintenance"}
+        for event in events:
+            if event.id in ongoing_ids:
+                assert event.to_age == 99, (
+                    f"{event.id} should have to_age=99 for perpetual ownership, got {event.to_age}"
+                )
+
+    def test_rolling_replacement_events(self):
+        """Replacement events at 8, 16, 24, 32, 40 for 8-year cycle."""
+        events = get_car_defaults(
+            fuel_type="petrol",
+            acquisition_date=date(2022, 1, 1),
+            replace_cycle=8,
+        )
+        replace_events = [e for e in events if e.id.startswith("c-replace-")]
+        ages = sorted([e.from_age for e in replace_events])
+        assert ages == [8, 16, 24, 32, 40], (
+            f"Expected replacements at 8,16,24,32,40, got {ages}"
+        )
+        for r in replace_events:
+            assert r.frequency == "once"
+            assert r.amount == Decimal("18000.00")
+
+    def test_ct_events_through_age_40(self):
+        """CT events run from age 4 to 40, every 2 years."""
         events = get_car_defaults(
             fuel_type="petrol",
             acquisition_date=date(2022, 1, 1),
@@ -196,24 +226,13 @@ class TestCarDefaults:
         )
         ct_events = [e for e in events if e.id.startswith("c-ct-")]
         ct_ages = sorted([e.from_age for e in ct_events])
-        assert ct_ages == [4, 6, 8], f"Expected CT at 4,6,8, got {ct_ages}"
+        assert ct_ages[0] == 4, f"First CT at 4, got {ct_ages[0]}"
+        assert ct_ages[1] == 6
+        assert ct_ages[2] == 8
+        assert ct_ages[-1] <= 40, f"Last CT should be ≤ 40, got {ct_ages[-1]}"
         for ct in ct_events:
             assert ct.frequency == "once"
             assert ct.amount == Decimal("80.00")
-
-    def test_replacement_event_at_cycle_end(self):
-        """Replacement event fires at replace_cycle age."""
-        events = get_car_defaults(
-            fuel_type="petrol",
-            acquisition_date=date(2022, 1, 1),
-            replace_cycle=8,
-            replace_cost=Decimal("18000.00"),
-        )
-        replace = next(e for e in events if e.id == "c-replace")
-        assert replace.from_age == 8
-        assert replace.to_age == 8
-        assert replace.frequency == "once"
-        assert replace.amount == Decimal("18000.00")
 
     def test_petrol_vs_electric_fuel_cost(self):
         """Electric cars have lower fuel/energy costs."""
@@ -240,6 +259,19 @@ class TestCarDefaults:
         events = get_car_defaults("petrol", date(2022, 1, 1))
         for event in events:
             assert event.source == "default"
+
+    def test_old_car_not_expired_with_new_model(self):
+        """A car acquired 15 years ago should NOT be expired with the rolling model
+        (ongoing costs go to age 99)."""
+        events = get_car_defaults(
+            fuel_type="petrol",
+            acquisition_date=date(2011, 1, 1),
+            replace_cycle=8,
+        )
+        max_to_age = max(e.to_age for e in events)
+        assert max_to_age >= 99, (
+            f"Old car should have events extending to age 99, got max to_age={max_to_age}"
+        )
 
 
 # ── Tests: Tech Defaults ──────────────────────────────────────────────────────
@@ -308,7 +340,7 @@ class TestPopulateDefaults:
             {"fuel_type": "petrol", "replace_cycle": 8, "replace_cost": 18000},
         )
         assert any(e.id == "c-ct-1" for e in events)
-        assert any(e.id == "c-replace" for e in events)
+        assert any(e.id.startswith("c-replace-") for e in events)
 
     def test_populate_tech_via_dispatcher(self):
         """populate_defaults with entity_type='tech' returns tech defaults."""

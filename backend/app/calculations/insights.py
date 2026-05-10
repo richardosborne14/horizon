@@ -544,3 +544,339 @@ def _format_abs(n: int) -> str:
             result = "\u00a0" + result
         result = ch + result
     return result + "€"
+
+
+# ── Lifecycle Alerts (TASK-6.9) ───────────────────────────────────────────────
+
+
+@dataclass
+class LifecycleAlert:
+    """A time-specific alert tied to an exact year in the projection.
+
+    Unlike general Insights, these are event-driven and tied to specific
+    lifecycle moments: loan termination, kid independence, car replacement, etc.
+    """
+
+    id: str  # stable identifier e.g. "loan_end_2035"
+    alert_type: str  # "loan_end" | "kid_independence" | "car_replacement" | "ceiling" | "status_change" | "retirement_countdown" | "pet_eol" | "expense_peak"
+    year: int
+    age: int
+    severity: str  # "info" | "action" | "warning"
+    title: str
+    description: str
+    impact_monthly: Decimal | None = None
+    impact_wealth: Decimal | None = None
+    action_label: str | None = None
+    action_link: str | None = None  # section to navigate to
+
+
+def generate_lifecycle_alerts(
+    timeline: list[Any],
+    summary: dict[str, Any],
+    loans: list[dict[str, Any]],
+    life_entities: list[dict[str, Any]],
+    allocations: list[dict[str, Any]],
+    profile_data: dict[str, Any],
+) -> list[LifecycleAlert]:
+    """Generate time-specific lifecycle alerts from projection data.
+
+    Args:
+        timeline: Full projection timeline.
+        summary: Dict from compute_summary().
+        loans: List of loan dicts from ProjectionInput.
+        life_entities: List of life entity dicts from ProjectionInput.
+        allocations: List of allocation dicts.
+        profile_data: Dict with monthly_gross, growth_rate, target_age, current_age.
+
+    Returns:
+        List of LifecycleAlert sorted by year, max 3-4 per year.
+    """
+    if not timeline:
+        return []
+
+    current_year = getattr(timeline[0], "year", 2026)
+    current_age = getattr(timeline[0], "age", 40)
+
+    alerts: list[LifecycleAlert] = []
+
+    # ── Loan termination alerts ──────────────────────────────────────
+    for loan in loans:
+        label = loan.get("label", "Crédit")
+        monthly = Decimal(str(loan.get("monthly_payment", 0)))
+        insurance = Decimal(str(loan.get("insurance_monthly", 0)))
+        total_m = monthly + insurance
+        if total_m <= Decimal("0"):
+            continue
+
+        end_date_str = loan.get("end_date")
+        if end_date_str is None:
+            continue
+
+        if isinstance(end_date_str, str):
+            end_date = __import__("datetime").date.fromisoformat(end_date_str)
+        else:
+            end_date = end_date_str
+
+        end_year = end_date.year
+        termination_year = end_year + 1
+
+        if termination_year >= current_year and termination_year <= current_year + len(timeline):
+            # Estimate impact on final wealth: freed cash invested over remaining years
+            years_from_term = max(0, (current_year + len(timeline)) - termination_year)
+            impact = total_m * Decimal("12") * Decimal(str(years_from_term)) * Decimal("0.07")
+
+            alerts.append(
+                LifecycleAlert(
+                    id=f"loan_end_{termination_year}",
+                    alert_type="loan_end",
+                    year=termination_year,
+                    age=current_age + (termination_year - current_year),
+                    severity="action",
+                    title=f"{label} se termine",
+                    description=(
+                        f"En {termination_year}, votre {label} se termine. "
+                        f"Les {_fmt_euro(total_m)}/mois libérés pourraient être "
+                        f"redirigés vers votre épargne (+~{_fmt_euro(impact)} au patrimoine final)."
+                    ),
+                    impact_monthly=total_m,
+                    impact_wealth=impact,
+                    action_label="Voir l'allocation d'épargne",
+                    action_link="epargne",
+                )
+            )
+
+    # ── Kid independence alerts ──────────────────────────────────────
+    for entity in life_entities:
+        if entity.get("entity_type") != "kid":
+            continue
+        name = entity.get("entity_name", "Enfant")
+        cost_events = entity.get("cost_events", [])
+        if not cost_events:
+            continue
+
+        max_to_age = max(int(evt.get("to_age", 0)) for evt in cost_events)
+        entity_start_age = entity.get("entity_age_at_start", 0)
+        last_cost_year_index = max_to_age - entity_start_age
+        if last_cost_year_index < 0:
+            continue
+
+        independence_year = current_year + last_cost_year_index + 1
+
+        if 0 <= last_cost_year_index < len(timeline):
+            last_entry = timeline[last_cost_year_index]
+            kid_annual = getattr(last_entry, "kid_expenses", Decimal("0"))
+            kid_monthly = kid_annual / Decimal("12")
+            if kid_monthly > Decimal("0"):
+                alerts.append(
+                    LifecycleAlert(
+                        id=f"kid_indep_{name.lower()}_{independence_year}",
+                        alert_type="kid_independence",
+                        year=independence_year,
+                        age=current_age + (independence_year - current_year),
+                        severity="info",
+                        title=f"{name} devient indépendant(e)",
+                        description=(
+                            f"En {independence_year}, {name} termine ses études. "
+                            f"Vos dépenses enfants diminuent d'environ {_fmt_euro(kid_monthly)}/mois."
+                        ),
+                        impact_monthly=kid_monthly,
+                        action_label="Voir l'évolution des dépenses",
+                        action_link="charges",
+                    )
+                )
+
+    # ── Car replacement due (within 2 years) ────────────────────────
+    CAR_REPLACEMENT_THRESHOLD = Decimal("5000")
+    for i, entry in enumerate(timeline):
+        car_annual = getattr(entry, "car_expenses", Decimal("0"))
+        if i > 0 and car_annual - getattr(timeline[i - 1], "car_expenses", Decimal("0")) > CAR_REPLACEMENT_THRESHOLD:
+            year_diff = entry.year - current_year
+            if 0 <= year_diff <= 2:
+                extra = car_annual - getattr(timeline[i - 1], "car_expenses", Decimal("0"))
+                alerts.append(
+                    LifecycleAlert(
+                        id=f"car_replace_{entry.year}",
+                        alert_type="car_replacement",
+                        year=entry.year,
+                        age=getattr(entry, "age", current_age + year_diff),
+                        severity="warning",
+                        title="Remplacement de véhicule prévu",
+                        description=(
+                            f"Un remplacement de véhicule est prévu en {entry.year} "
+                            f"(~{_fmt_euro(extra)}). Assurez-vous d'avoir les fonds disponibles."
+                        ),
+                        impact_monthly=extra / Decimal("12"),
+                        action_label="Voir les véhicules",
+                        action_link="vie",
+                    )
+                )
+
+    # ── Investment ceiling approaching ───────────────────────────────
+    for alloc in allocations:
+        vehicle_key = alloc.get("vehicle_key", "")
+        monthly = Decimal(str(alloc.get("monthly", 0)))
+        balance = Decimal(str(alloc.get("balance", 0)))
+        if monthly <= Decimal("0"):
+            continue
+
+        from app.calculations.vehicles import VEHICLE_SPECS
+        spec = VEHICLE_SPECS.get(vehicle_key, {})
+        ceiling = Decimal(str(spec.get("ceiling", 0)))
+        if ceiling <= Decimal("0"):
+            continue
+
+        # Project when balance hits 90% of ceiling
+        years_to_ceiling = Decimal("99")
+        if monthly > Decimal("0"):
+            gap = ceiling * Decimal("0.9") - balance
+            if gap > Decimal("0"):
+                years_to_ceiling = gap / (monthly * Decimal("12"))
+
+        if years_to_ceiling <= Decimal("3"):
+            ceiling_year = current_year + int(float(years_to_ceiling)) + 1
+            alerts.append(
+                LifecycleAlert(
+                    id=f"ceiling_{vehicle_key}",
+                    alert_type="ceiling",
+                    year=ceiling_year,
+                    age=current_age + int(float(years_to_ceiling)) + 1,
+                    severity="info",
+                    title=f"{spec.get('label', vehicle_key)} atteindra son plafond",
+                    description=(
+                        f"Votre {spec.get('label', vehicle_key)} atteindra son plafond "
+                        f"de {_fmt_euro(ceiling)} vers {ceiling_year}. "
+                        f"Prévoyez une réallocation vers un autre véhicule."
+                    ),
+                    action_label="Gérer l'épargne",
+                    action_link="epargne",
+                )
+            )
+
+    # ── Retirement countdown (10, 5, 3, 1 years) ─────────────────────
+    target_age = profile_data.get("target_age", 65)
+    retirement_year = current_year + (target_age - current_age)
+    countdown_years = [10, 5, 3, 1]
+    for cd in countdown_years:
+        check_year = retirement_year - cd
+        if check_year > current_year and check_year <= current_year + len(timeline):
+            # Find checkpoint
+            idx = check_year - current_year
+            if 0 <= idx < len(timeline):
+                entry = timeline[idx]
+                wealth = getattr(entry, "total_wealth", Decimal("0"))
+                passive = getattr(entry, "passive_monthly", Decimal("0"))
+                alerts.append(
+                    LifecycleAlert(
+                        id=f"retirement_countdown_{cd}y",
+                        alert_type="retirement_countdown",
+                        year=check_year,
+                        age=target_age - cd,
+                        severity="info" if cd > 3 else "warning",
+                        title=f"Plus que {cd} an{'s' if cd > 1 else ''} avant la retraite",
+                        description=(
+                            f"En {check_year}, plus que {cd} an{'s' if cd > 1 else ''} avant votre "
+                            f"retraite. Patrimoine projeté : {_fmt_euro(wealth)}, "
+                            f"revenu passif : {_fmt_euro(passive)}/mois."
+                        ),
+                        action_label="Voir la projection",
+                        action_link="piste",
+                    )
+                )
+
+    # ── Pet end-of-life (approaching, 2 years) ──────────────────────
+    for entity in life_entities:
+        if entity.get("entity_type") != "pet":
+            continue
+        name = entity.get("entity_name", "Animal")
+        cost_events = entity.get("cost_events", [])
+        if not cost_events:
+            continue
+
+        max_to_age = max(int(evt.get("to_age", 0)) for evt in cost_events)
+        entity_start_age = entity.get("entity_age_at_start", 0)
+        last_cost_year_index = max_to_age - entity_start_age
+        if last_cost_year_index < 0:
+            continue
+
+        eol_year = current_year + last_cost_year_index + 1
+        if 0 <= (eol_year - current_year) <= 2:
+            alerts.append(
+                LifecycleAlert(
+                    id=f"pet_eol_{name.lower()}",
+                    alert_type="pet_eol",
+                    year=eol_year,
+                    age=current_age + (eol_year - current_year),
+                    severity="info",
+                    title=f"{name} — fin de vie estimée",
+                    description=(
+                        f"Les coûts pour {name} se terminent vers {eol_year}. "
+                        f"Souhaitez-vous prévoir un nouvel animal ?"
+                    ),
+                    action_label="Voir les entités",
+                    action_link="vie",
+                )
+            )
+
+    # ── Expense peak year ─────────────────────────────────────────────
+    max_expense = Decimal("0")
+    max_expense_year = current_year
+    max_expense_age = current_age
+    max_expense_idx = 0
+    for i, entry in enumerate(timeline):
+        expenses = (
+            getattr(entry, "base_expenses", Decimal("0"))
+            + getattr(entry, "loan_expenses", Decimal("0"))
+            + getattr(entry, "kid_expenses", Decimal("0"))
+            + getattr(entry, "pet_expenses", Decimal("0"))
+            + getattr(entry, "car_expenses", Decimal("0"))
+            + getattr(entry, "tech_expenses", Decimal("0"))
+            + getattr(entry, "recurring_expenses", Decimal("0"))
+        )
+        if expenses > max_expense:
+            max_expense = expenses
+            max_expense_year = entry.year
+            max_expense_age = entry.age
+            max_expense_idx = i
+
+    if max_expense > Decimal("0") and max_expense_year > current_year:
+        total_monthly = max_expense / Decimal("12")
+        # Find out why — check active life entities
+        reasons = []
+        entry = timeline[max_expense_idx]
+        if getattr(entry, "kid_expenses", Decimal("0")) > Decimal("0"):
+            reasons.append("enfants à charge")
+        if getattr(entry, "loan_expenses", Decimal("0")) > Decimal("0"):
+            reasons.append("crédits actifs")
+        if getattr(entry, "car_expenses", Decimal("0")) > Decimal("5000"):
+            reasons.append("remplacement véhicule")
+        reason_str = " + ".join(reasons) if reasons else "dépenses courantes"
+
+        alerts.append(
+            LifecycleAlert(
+                id=f"expense_peak_{max_expense_year}",
+                alert_type="expense_peak",
+                year=max_expense_year,
+                age=max_expense_age,
+                severity="info",
+                title=f"Pic de dépenses en {max_expense_year}",
+                description=(
+                    f"L'année {max_expense_year} sera votre pic de dépenses "
+                    f"({_fmt_euro(total_monthly)}/mois) — {reason_str}. "
+                    f"Anticipez avec un fonds de trésorerie."
+                ),
+                impact_monthly=total_monthly,
+                action_label="Voir les charges",
+                action_link="charges",
+            )
+        )
+
+    # Sort by year, no more than 3 per year
+    alerts.sort(key=lambda a: (a.year, {"warning": 0, "action": 1, "info": 2}.get(a.severity, 3)))
+    filtered: list[LifecycleAlert] = []
+    year_counts: dict[int, int] = {}
+    for alert in alerts:
+        year_counts[alert.year] = year_counts.get(alert.year, 0) + 1
+        if year_counts[alert.year] <= 3:
+            filtered.append(alert)
+
+    return filtered[:20]

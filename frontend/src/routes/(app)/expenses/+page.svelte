@@ -1,9 +1,7 @@
 <script lang="ts">
 	/**
-	 * Expenses page — 12-category expense grid with inflation preview table.
-	 *
-	 * Users enter their 2026 monthly expenses. The inflation preview table
-	 * shows how costs grow over 5/10/20/30 years under 3 economic scenarios.
+	 * Expenses page — 12-category expense grid, inflation preview, and loans section.
+	 * TASK-6.3: Loans management section added below the expense grid.
 	 */
 	import { api } from '$lib/api';
 	import Card from '$lib/components/Card.svelte';
@@ -15,6 +13,8 @@
 	let labels = data.labels ?? {};
 	let total = data.total ?? '0';
 	let preview = data.inflationPreview ?? {};
+	let loans = (data as any).loans ?? [];
+	let expenseTimeline = (data as any).expenseTimeline ?? null;
 
 	// ── Expense categories (ordered for grid) ──────────────────────────────
 	const categories = [
@@ -33,7 +33,6 @@
 		try {
 			const res = await api.put<{ total: string }>('/profile/expenses', expObj);
 			total = res.total;
-			// Re-fetch inflation preview
 			const prev = await api.get<{ preview: any }>('/profile/expenses/inflation-preview');
 			preview = prev.preview ?? {};
 			saveIndicator = 'saved';
@@ -69,6 +68,66 @@
 	$: indicatorText = saveIndicator === 'saved' ? '✓ Enregistré'
 		: saveIndicator === 'saving' ? '↻ Enregistrement...'
 		: saveIndicator === 'error' ? '✗ Erreur' : '';
+
+	// ── Loans CRUD (TASK-6.3) ────────────────────────────────────────────
+	let showLoanForm = false;
+	let newLoanLabel = '';
+	let newLoanType = 'mortgage';
+	let newLoanMonthly = 0;
+	let newLoanStartDate = new Date().toISOString().substring(0, 10);
+	let newLoanEndDate = '';
+	let newLoanRemainingMonths = 0;
+	let newLoanRemainingBalance = 0;
+	let newLoanInsurance = 0;
+
+	async function addLoan() {
+		if (!newLoanLabel || newLoanMonthly <= 0) return;
+		const payload: Record<string, any> = {
+			label: newLoanLabel,
+			loan_type: newLoanType,
+			monthly_payment: newLoanMonthly,
+			start_date: newLoanStartDate,
+		};
+		if (newLoanEndDate) payload.end_date = newLoanEndDate;
+		else if (newLoanRemainingMonths > 0) payload.remaining_months = newLoanRemainingMonths;
+		if (newLoanRemainingBalance > 0) payload.remaining_balance = newLoanRemainingBalance;
+		if (newLoanInsurance > 0) payload.insurance_monthly = newLoanInsurance;
+
+		try {
+			const loan = await api.post('/loans', payload);
+			if (loan) loans = [...loans, loan];
+			newLoanLabel = '';
+			newLoanMonthly = 0;
+			newLoanRemainingMonths = 0;
+			newLoanRemainingBalance = 0;
+			newLoanInsurance = 0;
+			showLoanForm = false;
+		} catch (err) {
+			console.error('[expenses] Loan create failed:', err);
+		}
+	}
+
+	async function deleteLoan(id: string) {
+		try {
+			await api.delete(`/loans/${id}`);
+			loans = loans.filter((l: any) => l.id !== id);
+		} catch (err) {
+			console.error('[expenses] Loan delete failed:', err);
+		}
+	}
+
+	const loanTypeLabels: Record<string, string> = {
+		mortgage: 'Immobilier', auto: 'Auto', consumer: 'Conso',
+		student: 'Étudiant', business: 'Pro', other: 'Autre',
+	};
+
+	function fmtDate(d: string | null): string {
+		if (!d) return '—';
+		return d.substring(0, 10);
+	}
+
+	$: loansTotalMonthly = loans.reduce((sum: number, l: any) =>
+		sum + parseFloat(l.monthly_payment || '0') + parseFloat(l.insurance_monthly || '0'), 0);
 </script>
 
 <svelte:head>
@@ -118,6 +177,123 @@
 			{/each}
 		</div>
 	</Card>
+
+	<!-- Loans Section (TASK-6.3) -->
+	<Card title="Crédits & Emprunts" icon="🏦" accent="purple" dataCocoDesc="Section des crédits et emprunts avec dates de fin. Les mensualités ne sont pas indexées sur l'inflation.">
+		<p class="text-[11px] text-zinc-400 mb-3">Détaillez vos emprunts avec leur date de fin pour une projection précise. Les mensualités sont fixes (pas d'inflation).</p>
+
+		{#if loans.length > 0}
+			<div class="flex items-center gap-2 mb-3 p-2 bg-purple-950/20 border border-purple-800/20 rounded-lg">
+				<span class="text-xs font-mono text-purple-300 font-bold">{fmtVal(String(loansTotalMonthly))}</span>
+				<span class="text-[10px] text-zinc-500">/ mois de remboursements</span>
+			</div>
+
+			<div class="space-y-2">
+				{#each loans as loan (loan.id)}
+					<div class="flex items-center gap-2 p-2 bg-zinc-900/60 border border-zinc-700/30 rounded-lg" data-coco-desc="Crédit {loan.label} : {loan.monthly_payment}€/mois{loan.end_date ? ', fin le ' + loan.end_date : ''}">
+						<span class="text-xs text-zinc-300 flex-1">{loan.label}</span>
+						<span class="text-[10px] text-zinc-500 bg-zinc-800/40 px-1.5 py-0.5 rounded">{loanTypeLabels[loan.loan_type] || loan.loan_type}</span>
+						<span class="text-xs font-mono text-zinc-200 w-20 text-right">{parseFloat(loan.monthly_payment || '0').toLocaleString('fr-FR')}€</span>
+						<span class="text-[10px] text-zinc-500 w-24 text-right">{loan.end_date ? fmtDate(loan.end_date) : 'Sans fin'}</span>
+						<button
+							class="text-zinc-600 hover:text-rose-400 text-xs"
+							onclick={() => deleteLoan(loan.id)}
+							data-coco-desc="Supprimer le crédit {loan.label}"
+						>✕</button>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="text-xs text-zinc-500 italic mb-2">Aucun emprunt enregistré. Ajoutez vos crédits pour une projection plus précise.</p>
+		{/if}
+
+		{#if showLoanForm}
+			<div class="flex flex-wrap items-end gap-2 mt-3 p-3 bg-zinc-900/40 border border-zinc-700/30 rounded-lg">
+				<input type="text" placeholder="Libellé" bind:value={newLoanLabel} class="w-32 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<select bind:value={newLoanType} class="bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200">
+					<option value="mortgage">Immobilier</option>
+					<option value="auto">Auto</option>
+					<option value="consumer">Conso</option>
+					<option value="student">Étudiant</option>
+					<option value="business">Pro</option>
+					<option value="other">Autre</option>
+				</select>
+				<input type="number" min="0" step="10" placeholder="€/mois" bind:value={newLoanMonthly} class="w-20 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<input type="date" bind:value={newLoanStartDate} class="w-32 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<input type="date" placeholder="Fin (optionnel)" bind:value={newLoanEndDate} class="w-32 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<button class="bg-purple-600 text-white text-xs rounded px-3 py-1 hover:bg-purple-500" onclick={addLoan}>Ajouter</button>
+				<button class="text-zinc-500 text-xs" onclick={() => showLoanForm = false}>Annuler</button>
+			</div>
+		{:else}
+			<button
+				class="w-full text-center text-xs text-zinc-500 hover:text-zinc-300 py-2 border border-dashed border-zinc-700/50 rounded-lg hover:border-purple-700/50 transition-colors mt-2"
+				onclick={() => showLoanForm = true}
+				data-coco-desc="Ouvrir le formulaire d'ajout d'emprunt"
+			>
+				+ Ajouter un emprunt
+			</button>
+		{/if}
+	</Card>
+
+	<!-- Sprint 6: Expense Evolution Timeline (TASK-6.6) -->
+	{#if expenseTimeline?.timeline?.length}
+		<Card title="Évolution des dépenses" icon="📊" accent="sky" dataCocoDesc="Évolution des dépenses mois par mois sur la durée de la projection. Montre quand les crédits se terminent, les enfants deviennent indépendants, etc.">
+			<p class="text-[11px] text-zinc-400 mb-3">Comment vos dépenses évoluent dans le temps. Les barres empilées montrent la composition mensuelle.</p>
+
+			<div class="space-y-1 max-h-64 overflow-y-auto">
+				{#each expenseTimeline.timeline.slice(0, 30) as t}
+					{@const year = t as any}
+					{@const base = parseFloat(year.base_expenses_monthly || '0')}
+					{@const loan = parseFloat(year.loan_payments_monthly || '0')}
+					{@const kid = parseFloat(year.kid_expenses_monthly || '0')}
+					{@const pet = parseFloat(year.pet_expenses_monthly || '0')}
+					{@const car = parseFloat(year.car_expenses_monthly || '0')}
+					{@const tech = parseFloat(year.tech_expenses_monthly || '0')}
+					{@const total = base + loan + kid + pet + car + tech}
+					<div class="flex items-center gap-2 py-1 border-b border-zinc-800/20 text-[10px]">
+						<span class="w-10 text-zinc-500">{year.year}</span>
+						<div class="flex-1 h-3 bg-zinc-800 rounded-full overflow-hidden flex">
+							{#if base > 0}<div class="h-full bg-zinc-500" style="width: {(base / Math.max(1, total)) * 100}%"></div>{/if}
+							{#if loan > 0}<div class="h-full bg-amber-500" style="width: {(loan / Math.max(1, total)) * 100}%"></div>{/if}
+							{#if kid > 0}<div class="h-full bg-purple-500" style="width: {(kid / Math.max(1, total)) * 100}%"></div>{/if}
+							{#if pet > 0}<div class="h-full bg-rose-400" style="width: {(pet / Math.max(1, total)) * 100}%"></div>{/if}
+							{#if car > 0}<div class="h-full bg-sky-500" style="width: {(car / Math.max(1, total)) * 100}%"></div>{/if}
+							{#if tech > 0}<div class="h-full bg-teal-500" style="width: {(tech / Math.max(1, total)) * 100}%"></div>{/if}
+						</div>
+						<span class="w-16 text-right font-mono text-zinc-300">{fmtVal(String(total))}</span>
+					</div>
+				{/each}
+			</div>
+
+			<div class="flex flex-wrap gap-3 mt-3 text-[9px] text-zinc-500">
+				<span><span class="inline-block w-2 h-2 rounded bg-zinc-500 mr-1"></span>Base</span>
+				<span><span class="inline-block w-2 h-2 rounded bg-amber-500 mr-1"></span>Crédits</span>
+				<span><span class="inline-block w-2 h-2 rounded bg-purple-500 mr-1"></span>Enfants</span>
+				<span><span class="inline-block w-2 h-2 rounded bg-rose-400 mr-1"></span>Animaux</span>
+				<span><span class="inline-block w-2 h-2 rounded bg-sky-500 mr-1"></span>Véhicules</span>
+				<span><span class="inline-block w-2 h-2 rounded bg-teal-500 mr-1"></span>Tech</span>
+			</div>
+		</Card>
+
+		<!-- Key Expense Events -->
+		{#if expenseTimeline.key_events?.length}
+			<Card title="Événements à venir" icon="📅" accent="rose" dataCocoDesc="Événements clés du cycle de vie qui impactent vos dépenses mensuelles : fin de crédit, indépendance des enfants, fin de vie d'un animal.">
+				<div class="space-y-2">
+					{#each expenseTimeline.key_events as evt}
+						{@const e = evt as any}
+						{@const impact = parseFloat(e.impact_monthly || '0')}
+						<div class="flex items-center gap-2 p-2 rounded-lg bg-zinc-900/40 border border-zinc-800/30" data-coco-desc={`Événement ${e.category} : ${e.event} en ${e.year}`}>
+							<span class="text-[10px] w-12 text-zinc-500 font-mono">{e.year}</span>
+							<span class="text-[11px] text-zinc-300 flex-1">{e.event}</span>
+							<span class="text-[10px] font-mono {impact < 0 ? 'text-emerald-400' : 'text-rose-400'}">
+								{impact < 0 ? '' : '+'}{fmtVal(String(impact))}/mois
+							</span>
+						</div>
+					{/each}
+				</div>
+			</Card>
+		{/if}
+	{/if}
 
 	<!-- Inflation Preview -->
 	{#if Object.keys(preview).length > 0}

@@ -276,3 +276,203 @@ class CompareResponse(BaseModel):
     base: ProjectionResponse
     scenario: ProjectionResponse
     delta: DeltaOut
+
+
+# ── Expense timeline schemas (TASK-6.6) ──────────────────────────────────
+
+
+class ExpenseTimelineEvent(BaseModel):
+    """A key expense change event in the projection timeline."""
+
+    year: int
+    event: str
+    impact_monthly: str  # Decimal as string, negative = expense decrease
+    category: str  # "loan_end", "kid_independence", "pet_eol", "car_replacement", "loan_start"
+
+
+class ExpenseTimelineYear(BaseModel):
+    """A single year in the expense evolution timeline."""
+
+    year: int
+    age: int
+    base_expenses_monthly: str
+    loan_payments_monthly: str
+    kid_expenses_monthly: str
+    pet_expenses_monthly: str
+    car_expenses_monthly: str
+    tech_expenses_monthly: str
+    recurring_monthly: str
+    project_expenses_monthly: str
+    total_monthly: str
+    events: list[str] = []
+    delta_vs_previous: str = "0.00"
+
+
+class ExpenseTimelineResponse(BaseModel):
+    """Full expense timeline — year-by-year breakdown + key events."""
+
+    timeline: list[ExpenseTimelineYear]
+    key_events: list[ExpenseTimelineEvent]
+
+
+# ── Sensitivity analysis schemas (TASK-6.7) ──────────────────────────────
+
+
+class SensitivityParamOut(BaseModel):
+    """A single sensitivity analysis result (one parameter tested)."""
+
+    parameter: str
+    label: str
+    description: str
+    base_value_display: str
+    test_value_display: str
+    base_wealth: str  # Decimal as string
+    test_wealth: str  # Decimal as string
+    delta_wealth: str  # Decimal as string
+    delta_pct: str  # Decimal as string
+    delta_exhaustion: int
+    rank: int
+
+
+class SensitivityResponse(BaseModel):
+    """Full sensitivity analysis response."""
+
+    base_wealth_at_retirement: str
+    base_exhaustion_age: int | None = None
+    parameters: list[SensitivityParamOut]
+    scale: str
+    top_lever_narrative: str = ""
+
+
+# ── Lifecycle alerts schemas (TASK-6.9) ─────────────────────────────────
+
+
+class LifecycleAlertOut(BaseModel):
+    """A time-specific lifecycle alert."""
+
+    id: str
+    alert_type: str
+    year: int
+    age: int
+    severity: str
+    title: str
+    description: str
+    impact_monthly: str | None = None
+    impact_wealth: str | None = None
+    action_label: str | None = None
+    action_link: str | None = None
+
+
+class LifecycleAlertsResponse(BaseModel):
+    """Response containing lifecycle alerts."""
+
+    alerts: list[LifecycleAlertOut]
+    total: int
+
+
+# ── Year drill-down schemas (TASK-6.10) ──────────────────────────────────
+
+
+class DrillDownLifeEntityEvent(BaseModel):
+    """A single active cost event for a life entity in a specific year."""
+
+    label: str
+    amount: str  # Decimal as string
+    frequency: str  # "monthly", "annual", "once"
+    annual: str  # Decimal as string
+
+
+class DrillDownLifeEntity(BaseModel):
+    """A life entity active in the drill-down year with its costs."""
+
+    name: str
+    type: str  # "kid", "pet", "car", "tech"
+    age: int
+    events_active: list[DrillDownLifeEntityEvent]
+    subtotal: str  # Decimal as string
+    note: str = ""
+
+
+class DrillDownIncome(BaseModel):
+    """Breakdown of income sources for a specific year."""
+
+    gross_ca: str
+    growth_rate_applied: str
+    caf: str
+    cesu_credit: str
+    charity_credit: str
+    project_income: str
+    pension: str
+    total: str
+
+
+class DrillDownCharges(BaseModel):
+    """Breakdown of social charges for a specific year."""
+
+    ae_cotisations: str
+    ae_rate: str
+    cfe: str
+    total: str
+
+
+class DrillDownExpenses(BaseModel):
+    """Breakdown of expenses for a specific year."""
+
+    base_total_monthly: str
+    base_total_annual: str
+    inflation_factor: str
+
+
+class DrillDownLifeEntitiesTotal(BaseModel):
+    """Aggregate life entity costs for the drill-down year."""
+
+    kids: str
+    pets: str
+    cars: str
+    tech: str
+    total: str
+
+
+class DrillDownLoan(BaseModel):
+    """A loan in the drill-down year."""
+
+    label: str
+    monthly: str
+    annual: str
+    status: str  # "active" or "ended"
+    ends: str | None = None
+
+
+class DrillDownInvestments(BaseModel):
+    """Investment breakdown for the drill-down year."""
+
+    contributions: dict[str, str]  # vehicle_key → amount
+    returns: dict[str, str]
+    balances: dict[str, str]
+    notes: list[str] = []
+
+
+class DrillDownSummary(BaseModel):
+    """Summary statistics for the drill-down year."""
+
+    total_income: str
+    total_outgoing: str
+    net: str
+    net_status: str  # "surplus", "deficit"
+    explanation: str
+
+
+class YearDrillDownResponse(BaseModel):
+    """Complete drill-down for a single projection year."""
+
+    year: int
+    age: int
+    phase: str  # "accumulation" or "post-retirement"
+    income: DrillDownIncome
+    charges: DrillDownCharges
+    expenses: DrillDownExpenses
+    life_entities: list[DrillDownLifeEntity]
+    life_entities_total: DrillDownLifeEntitiesTotal
+    loans: list[DrillDownLoan]
+    investments: DrillDownInvestments
+    summary: DrillDownSummary

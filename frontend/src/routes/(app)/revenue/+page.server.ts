@@ -17,10 +17,11 @@ async function fetchWithAuth(cookies: any, path: string): Promise<any> {
 }
 
 export const load: PageServerLoad = async ({ cookies }) => {
-	const [profile, growthData, currentRate] = await Promise.all([
+	const [profile, growthData, currentRate, waterfallData] = await Promise.all([
 		fetchWithAuth(cookies, '/api/profile'),
 		fetchWithAuth(cookies, '/api/constants/growth-presets'),
 		fetchWithAuth(cookies, '/api/rates/ae-rate?type=bnc_non_reglementee&year=2026'),
+		fetchWithAuth(cookies, '/api/profile/waterfall'),
 	]);
 
 	// Compute stats row values server-side
@@ -41,5 +42,6 @@ export const load: PageServerLoad = async ({ cookies }) => {
 		profile,
 		growthPresets: growthData?.presets ?? {},
 		stats: { grossMonthly, cotisationsMonthly, netMonthly, aeRate },
+		waterfall: waterfallData ?? null,
 	};
 };

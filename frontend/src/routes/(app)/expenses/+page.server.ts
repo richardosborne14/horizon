@@ -1,5 +1,6 @@
 /**
- * Expenses page server loader — loads profile expenses and inflation preview.
+ * Expenses page server loader — loads profile expenses, inflation preview, and loans.
+ * TASK-6.3: Loans displayed as a new section on the expenses page.
  */
 import type { PageServerLoad } from './$types';
 import { env } from '$env/dynamic/private';
@@ -17,9 +18,11 @@ async function fetchWithAuth(cookies: any, path: string): Promise<any> {
 }
 
 export const load: PageServerLoad = async ({ cookies }) => {
-	const [expensesData, inflationPreview] = await Promise.all([
+	const [expensesData, inflationPreview, loansData, expenseTimelineData] = await Promise.all([
 		fetchWithAuth(cookies, '/api/profile/expenses'),
 		fetchWithAuth(cookies, '/api/profile/expenses/inflation-preview'),
+		fetchWithAuth(cookies, '/api/loans'),
+		fetchWithAuth(cookies, '/api/projection/expense-timeline?scale=moderate'),
 	]);
 
 	return {
@@ -28,5 +31,7 @@ export const load: PageServerLoad = async ({ cookies }) => {
 		total: expensesData?.total ?? '0',
 		inflationPreview: inflationPreview?.preview ?? {},
 		currentMonthlyTotal: inflationPreview?.current_monthly_total ?? '0',
+		loans: loansData ?? [],
+		expenseTimeline: expenseTimelineData ?? null,
 	};
 };

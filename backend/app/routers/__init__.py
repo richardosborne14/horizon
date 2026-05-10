@@ -47,6 +47,18 @@ api_router.include_router(projects_router)
 from app.routers.projection import router as projection_router
 api_router.include_router(projection_router)
 
+# Loans (Sprint 6 — structured loan tracking with end dates)
+from app.routers.loans import router as loans_router
+api_router.include_router(loans_router)
+
+# Career History (Sprint 6 — professional career tracking for pension)
+from app.routers.career import router as career_router
+api_router.include_router(career_router)
+
+# Net Worth (Sprint 6 — TASK-6.5)
+from app.routers.net_worth import router as net_worth_router
+api_router.include_router(net_worth_router)
+
 # PDF Export (TASK-5.9)
 from app.routers.export import router as export_router
 api_router.include_router(export_router)

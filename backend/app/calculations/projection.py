@@ -102,6 +102,10 @@ class ProjectionInput:
     status_change_year: int | None = None
     status_change_savings: Decimal | None = None
 
+    # Loans (Sprint 6 — fixed nominal monthly payments, terminate at end_date)
+    # list of: {"label","monthly_payment","start_date","end_date","insurance_monthly"}
+    loans: list[dict[str, Any]] = field(default_factory=list)
+
     # Goal
     monthly_revenue_goal: Decimal | None = None
 
@@ -128,6 +132,7 @@ class YearProjection:
 
     # Expenses
     base_expenses: Decimal = Decimal("0")  # monthly × 12, inflation-adjusted
+    loan_expenses: Decimal = Decimal("0")  # fixed nominal loan payments (Sprint 6)
     kid_expenses: Decimal = Decimal("0")
     pet_expenses: Decimal = Decimal("0")
     car_expenses: Decimal = Decimal("0")
@@ -294,6 +299,9 @@ def _compute_accumulation_year(
     )
     base_exp += inp.monthly_expenses_total * Decimal("12") * cost_factor
 
+    # Loan expenses (fixed nominal, NOT inflation-adjusted — TASK-6.3)
+    loan_exp = _compute_loan_expenses(inp, year)
+
     # Recurring expenses
     rec_exp = _compute_recurring_expenses(inp, year, infl)
 
@@ -309,7 +317,7 @@ def _compute_accumulation_year(
     total_income = gross + proj_inc + caf + tax_credits
     total_outgoing = (
         charges + cfe + base_exp + kid_exp + pet_exp
-        + car_exp + tech_exp + rec_exp + proj_exp
+        + car_exp + tech_exp + rec_exp + proj_exp + loan_exp
     )
     net = total_income - total_outgoing + status_bonus
 
@@ -335,6 +343,7 @@ def _compute_accumulation_year(
         charges=charges.quantize(Decimal("0.01")),
         cfe=cfe.quantize(Decimal("0.01")),
         base_expenses=base_exp.quantize(Decimal("0.01")),
+        loan_expenses=loan_exp.quantize(Decimal("0.01")),
         kid_expenses=kid_exp.quantize(Decimal("0.01")),
         pet_expenses=pet_exp.quantize(Decimal("0.01")),
         car_expenses=car_exp.quantize(Decimal("0.01")),
@@ -464,6 +473,7 @@ def _compute_retirement_year(
         charges=Decimal("0"),
         cfe=Decimal("0"),
         base_expenses=base_exp.quantize(Decimal("0.01")),
+        loan_expenses=Decimal("0"),
         kid_expenses=kid_exp.quantize(Decimal("0.01")),
         pet_expenses=pet_exp.quantize(Decimal("0.01")),
         car_expenses=car_exp.quantize(Decimal("0.01")),
@@ -583,6 +593,53 @@ def _compute_life_entity_expenses(
             elif entity_type == "tech":
                 tech_exp += amount
     return Decimal("0"), kid_exp, pet_exp, car_exp, tech_exp
+
+
+def _compute_loan_expenses(
+    inp: ProjectionInput,
+    year: int,
+) -> Decimal:
+    """Compute total loan expenses active in the given year.
+
+    Loans are fixed nominal payments — NOT inflation-adjusted.
+    A loan is active if year falls within [start_date.year, end_date.year].
+    Insurance is added to the monthly payment.
+
+    Args:
+        inp: Projection input with loans list.
+        year: The projection year.
+
+    Returns:
+        Annual loan expense total (fixed nominal).
+    """
+    loan_exp = Decimal("0")
+    for loan in inp.loans:
+        start_date_obj = loan.get("start_date")
+        end_date_obj = loan.get("end_date")
+
+        # Parse date strings or date objects
+        if isinstance(start_date_obj, str):
+            start_date_obj = date.fromisoformat(start_date_obj)
+        if isinstance(end_date_obj, str):
+            end_date_obj = date.fromisoformat(end_date_obj)
+
+        if start_date_obj is None:
+            continue
+
+        start_year = start_date_obj.year
+
+        # If no end_date, treat as active forever (like the flat credit field)
+        if end_date_obj is None:
+            end_year = 9999
+        else:
+            end_year = end_date_obj.year
+
+        if start_year <= year <= end_year:
+            monthly = Decimal(str(loan.get("monthly_payment", 0)))
+            insurance = Decimal(str(loan.get("insurance_monthly", 0)))
+            loan_exp += (monthly + insurance) * Decimal("12")
+
+    return loan_exp
 
 
 def _compute_recurring_expenses(

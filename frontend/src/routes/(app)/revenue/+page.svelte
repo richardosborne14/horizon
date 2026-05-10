@@ -14,6 +14,7 @@
 	let profile = data.profile ?? {};
 	let growthPresets = data.growthPresets ?? {};
 	let stats = data.stats ?? { grossMonthly: 0, cotisationsMonthly: 0, netMonthly: 0, aeRate: '0.262' };
+	let waterfall = (data as any).waterfall ?? null;
 
 	// ── Auto-save ───────────────────────────────────────────────────────────
 	const DEBOUNCE_MS = 800;
@@ -230,4 +231,112 @@
 			</label>
 		</div>
 	</Card>
+
+	<!-- Sprint 6: Disposable Income Waterfall (TASK-6.8) -->
+	{#if waterfall}
+		<Card title="Où va votre argent ?" icon="🌊" accent="teal" dataCocoDesc="Cascade du revenu disponible : du CA brut à l'épargne réelle. Chaque barre montre une étape du flux d'argent mensuel.">
+			<p class="text-[11px] text-zinc-400 mb-3">Flux mensuel — {waterfall.year} (à {waterfall.age} ans)</p>
+
+			<div class="space-y-1.5">
+				<!-- Gross CA -->
+				<div class="flex items-center gap-2">
+					<span class="text-[10px] text-zinc-400 w-28 text-right">CA brut</span>
+					<div class="flex-1 h-5 bg-zinc-800 rounded overflow-hidden">
+						<div class="h-full bg-teal-500/60 rounded" style="width: 100%"></div>
+					</div>
+					<span class="text-[11px] font-mono text-teal-300 w-24 text-right">{fmtDec(parseFloat(waterfall.monthly.gross_ca))}</span>
+				</div>
+
+				<!-- Charges -->
+				<div class="flex items-center gap-2">
+					<span class="text-[10px] text-zinc-400 w-28 text-right">Cotisations</span>
+					<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+						<div class="h-full bg-rose-500/40 rounded ml-auto" style="width: {Math.min(100, (parseFloat(waterfall.monthly.charges) / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+					</div>
+					<span class="text-[11px] font-mono text-rose-400 w-24 text-right">-{fmtDec(parseFloat(waterfall.monthly.charges))}</span>
+				</div>
+
+				<!-- Net after charges -->
+				<div class="flex items-center gap-2 py-1 border-t border-zinc-800/50">
+					<span class="text-[10px] text-zinc-300 w-28 text-right font-medium">Net après cotis.</span>
+					<div class="flex-1 h-1 bg-teal-500/20 rounded-full"></div>
+					<span class="text-[11px] font-mono font-bold text-teal-300 w-24 text-right">{fmtDec(parseFloat(waterfall.monthly.net_after_charges))}</span>
+				</div>
+
+				<!-- Base expenses -->
+				<div class="flex items-center gap-2">
+					<span class="text-[10px] text-zinc-400 w-28 text-right">Dépenses base</span>
+					<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+						<div class="h-full bg-amber-500/40 rounded ml-auto" style="width: {Math.min(100, (parseFloat(waterfall.monthly.base_expenses) / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+					</div>
+					<span class="text-[11px] font-mono text-amber-400 w-24 text-right">-{fmtDec(parseFloat(waterfall.monthly.base_expenses))}</span>
+				</div>
+
+				<!-- Loans -->
+				{#if parseFloat(waterfall.monthly.loan_payments) > 0}
+					<div class="flex items-center gap-2">
+						<span class="text-[10px] text-zinc-400 w-28 text-right">Crédits</span>
+						<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+							<div class="h-full bg-purple-500/40 rounded ml-auto" style="width: {Math.min(100, (parseFloat(waterfall.monthly.loan_payments) / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+						</div>
+						<span class="text-[11px] font-mono text-purple-400 w-24 text-right">-{fmtDec(parseFloat(waterfall.monthly.loan_payments))}</span>
+					</div>
+				{/if}
+
+		<!-- Life costs summary -->
+		{#if parseFloat(waterfall.monthly.kid_costs) + parseFloat(waterfall.monthly.pet_costs) + parseFloat(waterfall.monthly.car_costs) + parseFloat(waterfall.monthly.tech_costs) + parseFloat(waterfall.monthly.recurring_costs) > 0}
+			{@const lifeTotal = parseFloat(waterfall.monthly.kid_costs) + parseFloat(waterfall.monthly.pet_costs) + parseFloat(waterfall.monthly.car_costs) + parseFloat(waterfall.monthly.tech_costs) + parseFloat(waterfall.monthly.recurring_costs)}
+					<div class="flex items-center gap-2">
+						<span class="text-[10px] text-zinc-400 w-28 text-right">Vie (enfants, etc.)</span>
+						<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+							<div class="h-full bg-rose-400/30 rounded ml-auto" style="width: {Math.min(100, (lifeTotal / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+						</div>
+						<span class="text-[11px] font-mono text-rose-400 w-24 text-right">-{fmtDec(lifeTotal)}</span>
+					</div>
+				{/if}
+
+				<!-- CAF / Tax credits -->
+				{#if parseFloat(waterfall.monthly.caf_income) > 0 || parseFloat(waterfall.monthly.tax_credits) > 0}
+					<div class="flex items-center gap-2">
+						<span class="text-[10px] text-zinc-400 w-28 text-right">Aides & crédits</span>
+						<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+							<div class="h-full bg-emerald-500/40 rounded" style="width: {Math.min(100, ((parseFloat(waterfall.monthly.caf_income) + parseFloat(waterfall.monthly.tax_credits)) / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+						</div>
+						<span class="text-[11px] font-mono text-emerald-400 w-24 text-right">+{fmtDec(parseFloat(waterfall.monthly.caf_income) + parseFloat(waterfall.monthly.tax_credits))}</span>
+					</div>
+				{/if}
+
+				<!-- Disposable -->
+				<div class="flex items-center gap-2 py-1 border-t border-zinc-800/50">
+					<span class="text-[10px] text-zinc-300 w-28 text-right font-medium">Revenu disponible</span>
+					<div class="flex-1 h-1 bg-teal-500/20 rounded-full"></div>
+					<span class="text-[11px] font-mono font-bold {parseFloat(waterfall.monthly.disposable) >= 0 ? 'text-teal-300' : 'text-rose-400'} w-24 text-right">{parseFloat(waterfall.monthly.disposable) >= 0 ? '' : '-'}{fmtDec(Math.abs(parseFloat(waterfall.monthly.disposable)))}</span>
+				</div>
+
+				<!-- Savings -->
+				<div class="flex items-center gap-2">
+					<span class="text-[10px] text-zinc-400 w-28 text-right">Épargne prévue</span>
+					<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+						<div class="h-full bg-sky-500/40 rounded ml-auto" style="width: {Math.min(100, (parseFloat(waterfall.monthly.savings_planned) / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+					</div>
+					<span class="text-[11px] font-mono text-sky-400 w-24 text-right">-{fmtDec(parseFloat(waterfall.monthly.savings_planned))}</span>
+				</div>
+
+				<!-- Surplus / Deficit -->
+				<div class="flex items-center gap-2 p-2 rounded-lg {waterfall.status === 'surplus' ? 'bg-emerald-950/20 border border-emerald-800/20' : waterfall.status === 'deficit' ? 'bg-rose-950/20 border border-rose-800/20' : 'bg-zinc-900/40 border border-zinc-800/20'}">
+					<span class="text-[10px] font-semibold w-28 text-right {waterfall.status === 'surplus' ? 'text-emerald-300' : waterfall.status === 'deficit' ? 'text-rose-300' : 'text-zinc-300'}">
+						{waterfall.status === 'surplus' ? 'Excédent' : waterfall.status === 'deficit' ? 'Déficit' : 'Équilibre'}
+					</span>
+					<div class="flex-1 h-1 rounded-full {waterfall.status === 'surplus' ? 'bg-emerald-500/30' : waterfall.status === 'deficit' ? 'bg-rose-500/30' : 'bg-zinc-700'}"></div>
+					<span class="text-[11px] font-mono font-bold {waterfall.status === 'surplus' ? 'text-emerald-400' : waterfall.status === 'deficit' ? 'text-rose-400' : 'text-zinc-300'} w-24 text-right">
+						{parseFloat(waterfall.monthly.monthly_surplus_deficit) >= 0 ? '+' : ''}{fmtDec(parseFloat(waterfall.monthly.monthly_surplus_deficit))}
+					</span>
+				</div>
+			</div>
+
+			{#if waterfall.deficit_note}
+				<p class="text-[10px] text-rose-400/70 mt-3 leading-relaxed">{waterfall.deficit_note}</p>
+			{/if}
+		</Card>
+	{/if}
 </div>

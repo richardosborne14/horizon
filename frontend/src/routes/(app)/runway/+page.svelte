@@ -23,12 +23,19 @@
 	$: serverError = data.error;
 	$: showNoBirthdate = !hasBirthdate || serverError === 'no_birthdate' || serverError === 'no_profile';
 	$: showApiError = serverError && serverError !== 'no_birthdate' && serverError !== 'no_profile';
+	$: pensionEstimate = (data as any).pensionEstimate ?? null;
+	$: netWorth = (data as any).netWorth ?? null;
 
-	// Initialize store from server data
+	// Initialize store and Sprint 6 data from server
+	let _s6Loaded = false;
+
 	onMount(() => {
 		if (data.projection) {
 			projectionStore.set(data.projection);
 		}
+		_s6Loaded = true;
+		loadAlerts();
+		loadSensitivity();
 	});
 
 	// ── Scale selector ────────────────────────────────────────────────
@@ -190,6 +197,74 @@
 		scenarioResult = null;
 	}
 
+	// ── Lifeycle Alerts (TASK-6.9) ────────────────────────────────────
+	let lifecycleAlerts: any[] = [];
+	let alertsLoading = false;
+
+	async function loadAlerts() {
+		alertsLoading = true;
+		try {
+			const res = await fetch(`/api/projection/alerts?scale=${currentScale}`);
+			if (res.ok) {
+				const data = await res.json();
+				lifecycleAlerts = data.alerts || [];
+			}
+		} catch (e) {
+			console.error('Alerts load failed:', e);
+		} finally {
+			alertsLoading = false;
+		}
+	}
+
+	// ── Sensitivity Analysis (TASK-6.7) ──────────────────────────────
+	let sensitivityData: any = null;
+	let sensitivityLoading = false;
+
+	async function loadSensitivity() {
+		sensitivityLoading = true;
+		try {
+			const res = await fetch(`/api/projection/sensitivity?scale=${currentScale}`);
+			if (res.ok) {
+				sensitivityData = await res.json();
+			}
+		} catch (e) {
+			console.error('Sensitivity load failed:', e);
+		} finally {
+			sensitivityLoading = false;
+		}
+	}
+
+	// ── Year Drill-Down (TASK-6.10) ──────────────────────────────────
+	let drillDownYear: number | null = null;
+	let drillDownData: any = null;
+	let drillDownLoading = false;
+
+	async function loadDrillDown(year: number) {
+		drillDownLoading = true;
+		drillDownYear = year;
+		try {
+			const res = await fetch(`/api/projection/year/${year}?scale=${currentScale}`);
+			if (res.ok) {
+				drillDownData = await res.json();
+			}
+		} catch (e) {
+			console.error('Drill-down load failed:', e);
+		} finally {
+			drillDownLoading = false;
+		}
+	}
+
+	function closeDrillDown() {
+		drillDownYear = null;
+		drillDownData = null;
+	}
+
+	// Reload Sprint 6 data on scale change
+	$: if (currentScale && projection && _s6Loaded) {
+		loadAlerts();
+		loadSensitivity();
+	}
+
 	// ── PDF Export (TASK-5.9) ─────────────────────────────────────────
 	let exportLoading = false;
 
@@ -315,6 +390,58 @@
 			</div>
 		{/if}
 
+		<!-- ── Pension Estimate (TASK-6.2) ────────────────────────────────── -->
+		{#if pensionEstimate && parseFloat(pensionEstimate.total_monthly || '0') > 0}
+			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
+				<p class="text-xs font-semibold text-zinc-300 mb-3">🏛️ Estimation indicative de retraite</p>
+				<div class="grid grid-cols-2 gap-3 mb-3">
+					<div class="bg-zinc-900/40 rounded-lg p-3 text-center">
+						<span class="block text-lg font-bold font-mono text-teal-300">{fmt(pensionEstimate.total_monthly)}</span>
+						<span class="text-[10px] text-zinc-500">Pension mensuelle estimée</span>
+					</div>
+					<div class="bg-zinc-900/40 rounded-lg p-3 text-center">
+						<span class="block text-lg font-bold font-mono {pensionEstimate.is_taux_plein ? 'text-emerald-400' : 'text-amber-400'}">{parseFloat(pensionEstimate.taux || '0') * 100}%</span>
+						<span class="text-[10px] text-zinc-500">{pensionEstimate.is_taux_plein ? 'Taux plein' : 'Décote'}</span>
+					</div>
+				</div>
+				<div class="text-[10px] text-zinc-400 space-y-1 mb-2">
+					<div class="flex justify-between"><span>Retraite de base</span><span class="font-mono">{fmt(pensionEstimate.base_monthly)}</span></div>
+					<div class="flex justify-between"><span>Complémentaire</span><span class="font-mono">{fmt(pensionEstimate.complementaire_monthly)}</span></div>
+				</div>
+				<div class="flex items-center gap-2 text-[10px]">
+					<span class="text-zinc-500">{pensionEstimate.trimestres_valides ?? 0} / {pensionEstimate.trimestres_requis ?? 172} trimestres</span>
+					<div class="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+						<div class="h-full bg-teal-500 rounded-full" style="width: {Math.min(100, ((pensionEstimate.trimestres_valides ?? 0) / (pensionEstimate.trimestres_requis || 1)) * 100)}%"></div>
+					</div>
+				</div>
+				<p class="text-[9px] text-zinc-600 mt-2">Estimation basée sur votre parcours déclaré. Consultez info-retraite.fr pour un calcul officiel.</p>
+			</div>
+		{/if}
+
+		<!-- ── Net Worth Snapshot (TASK-6.5) ───────────────────────────────── -->
+		{#if netWorth}
+			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
+				<p class="text-xs font-semibold text-zinc-300 mb-3">💰 Bilan patrimonial</p>
+				<div class="text-center mb-3">
+					<span class="block text-2xl font-bold font-mono text-teal-300">{fmt(netWorth.net_worth)}</span>
+					<span class="text-[10px] text-zinc-500">Patrimoine net estimé</span>
+				</div>
+				<div class="grid grid-cols-2 gap-2 text-[10px]">
+					<div class="bg-zinc-900/40 rounded-lg p-2">
+						<span class="text-zinc-500">Actifs</span>
+						<span class="block font-mono text-teal-300">{fmt(netWorth.total_assets)}</span>
+					</div>
+					<div class="bg-zinc-900/40 rounded-lg p-2">
+						<span class="text-zinc-500">Dettes</span>
+						<span class="block font-mono text-rose-400">{fmt(netWorth.total_debts)}</span>
+					</div>
+				</div>
+				{#if netWorth.note}
+					<p class="text-[9px] text-zinc-500 mt-2">{netWorth.note}</p>
+				{/if}
+			</div>
+		{/if}
+
 		<!-- ── Wealth chart ────────────────────────────────────────────────── -->
 		<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
 			<p class="text-xs font-semibold text-zinc-300 mb-2">Trajectoire patrimoine</p>
@@ -369,8 +496,8 @@
 				</thead>
 				<tbody>
 					{#each filteredTimeline as t}
-						<tr class="border-t border-zinc-800/30 hover:bg-zinc-800/10">
-							<td class="py-1 font-mono text-zinc-400">{t.year}</td>
+						<tr class="border-t border-zinc-800/30 hover:bg-zinc-800/10 cursor-pointer" on:click={() => loadDrillDown(t.year)} data-coco-desc={`Cliquer pour voir le détail de l'année ${t.year}`}>
+							<td class="py-1 font-mono text-teal-400 underline decoration-dotted">{t.year}</td>
 							<td class="py-1 font-mono text-zinc-300 text-right">{t.age}</td>
 							<td class="py-1 font-mono text-zinc-300 text-right">{fmtK(t.gross_annual)}</td>
 							<td class="py-1 font-mono text-rose-400/70 text-right">{fmtK(t.charges)}</td>
@@ -388,6 +515,125 @@
 				</tbody>
 			</table>
 		</div>
+
+		<!-- ── Sensitivity Analysis (TASK-6.7) ────────────────────────────── -->
+		{#if sensitivityData?.parameters?.length}
+			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
+				<p class="text-xs font-semibold text-zinc-300 mb-3">🔍 Qu'est-ce qui compte le plus ?</p>
+				<p class="text-[10px] text-zinc-500 mb-3">{sensitivityData.top_lever_narrative || 'Analyse de sensibilité sur les leviers financiers.'}</p>
+				<div class="space-y-2">
+					{#each sensitivityData.parameters as param}
+						<div class="flex items-center gap-3">
+							<span class="text-[10px] text-zinc-400 w-40 text-right truncate" title={param.label}>{param.label}</span>
+							<div class="flex-1 h-3 bg-zinc-900 rounded-full overflow-hidden">
+								<div
+									class="h-full rounded-full {parseFloat(param.delta_wealth || '0') > 0 ? 'bg-teal-500' : 'bg-rose-500'}"
+									style="width: {Math.min(100, Math.abs(parseFloat(param.delta_pct || '0')) * 2)}%"
+								></div>
+							</div>
+							<span class="text-[10px] font-mono w-24 text-right {parseFloat(param.delta_wealth || '0') > 0 ? 'text-teal-400' : 'text-rose-400'}">
+								{parseFloat(param.delta_wealth || '0') > 0 ? '+' : ''}{fmtK(param.delta_wealth)}
+							</span>
+							<span class="text-[9px] text-zinc-600 w-10 text-right">#{param.rank}</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		<!-- ── Lifeycle Alerts (TASK-6.9) ─────────────────────────────────── -->
+		{#if lifecycleAlerts.length > 0}
+			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
+				<p class="text-xs font-semibold text-zinc-300 mb-3">📅 Événements à venir</p>
+				<div class="space-y-2 max-h-80 overflow-y-auto">
+					{#each lifecycleAlerts as alert}
+						<div
+							class="flex items-start gap-2 p-2 rounded-lg border {alert.severity === 'warning' ? 'bg-rose-950/20 border-rose-800/30' : alert.severity === 'action' ? 'bg-amber-950/20 border-amber-800/30' : 'bg-zinc-900/40 border-zinc-800/30'}"
+							data-coco-desc="Alerte {alert.alert_type} : {alert.title}"
+						>
+							<span class="text-xs mt-0.5">
+								{alert.severity === 'warning' ? '🔴' : alert.severity === 'action' ? '🟡' : '🔵'}
+							</span>
+							<div class="flex-1 min-w-0">
+								<p class="text-[11px] text-zinc-200 font-medium">{alert.title}</p>
+								<p class="text-[10px] text-zinc-400">{alert.description}</p>
+								{#if alert.action_label}
+									<a
+										href={alert.action_link || '#'}
+										class="text-[10px] text-teal-400 hover:text-teal-300 underline mt-1 inline-block"
+									>{alert.action_label}</a>
+								{/if}
+							</div>
+							<span class="text-[10px] text-zinc-500 flex-shrink-0">{alert.year} ({alert.age} ans)</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		<!-- ── Year Drill-Down Panel (TASK-6.10) ───────────────────────────── -->
+		{#if drillDownData}
+			<div class="bg-zinc-800/30 border border-teal-800/30 rounded-xl p-4">
+				<div class="flex items-center justify-between mb-3">
+					<p class="text-xs font-semibold text-teal-300">🔎 Détail {drillDownData.year} (à {drillDownData.age} ans) — {drillDownData.phase === 'post-retirement' ? 'Post-retraite' : 'Accumulation'}</p>
+					<button class="text-zinc-500 hover:text-zinc-300 text-xs" on:click={closeDrillDown}>✕</button>
+				</div>
+
+				<div class="grid grid-cols-2 gap-3 mb-3">
+					<div class="bg-zinc-900/40 rounded-lg p-3">
+						<p class="text-[9px] text-zinc-500 mb-1">Revenus</p>
+						<div class="text-[10px] text-zinc-300 space-y-0.5">
+							<div class="flex justify-between"><span>CA brut</span><span class="font-mono">{fmtK(drillDownData.income.gross_ca)}</span></div>
+							<div class="flex justify-between"><span>CAF</span><span class="font-mono">{fmt(drillDownData.income.caf)}</span></div>
+							<div class="flex justify-between"><span>Crédit d'impôt</span><span class="font-mono">{fmt(drillDownData.income.cesu_credit)}</span></div>
+							{#if parseFloat(drillDownData.income.pension || '0') > 0}
+								<div class="flex justify-between"><span>Pension</span><span class="font-mono">{fmt(drillDownData.income.pension)}</span></div>
+							{/if}
+							<div class="flex justify-between font-medium text-teal-300"><span>Total</span><span class="font-mono">{fmtK(drillDownData.income.total)}</span></div>
+						</div>
+					</div>
+					<div class="bg-zinc-900/40 rounded-lg p-3">
+						<p class="text-[9px] text-zinc-500 mb-1">Dépenses</p>
+						<div class="text-[10px] text-zinc-300 space-y-0.5">
+							<div class="flex justify-between"><span>Cotisations</span><span class="font-mono text-rose-400">{fmtK(drillDownData.charges.ae_cotisations)}</span></div>
+							<div class="flex justify-between"><span>Base ({drillDownData.expenses.base_total_monthly}/mois)</span><span class="font-mono text-amber-400">{fmtK(drillDownData.expenses.base_total_annual)}</span></div>
+							{#if drillDownData.loans?.length}
+								{#each drillDownData.loans as loan}
+									<div class="flex justify-between"><span>{loan.label}</span><span class="font-mono text-purple-400">{loan.monthly}/mois</span></div>
+								{/each}
+							{/if}
+							{#if drillDownData.life_entities?.length}
+								{#each drillDownData.life_entities as le}
+									<div class="flex justify-between"><span>{le.name} ({le.type})</span><span class="font-mono">{fmt(le.subtotal)}</span></div>
+								{/each}
+							{/if}
+							<div class="flex justify-between font-medium text-rose-400"><span>Total sorties</span><span class="font-mono">{fmtK(drillDownData.summary.total_outgoing)}</span></div>
+						</div>
+					</div>
+				</div>
+
+				{#if drillDownData.investments?.contributions && Object.keys(drillDownData.investments.contributions).length > 0}
+					<div class="bg-zinc-900/40 rounded-lg p-3 mb-3">
+						<p class="text-[9px] text-zinc-500 mb-1">Investissements</p>
+						<div class="text-[10px] text-zinc-300 space-y-0.5">
+							{#each Object.keys(drillDownData.investments.contributions) as vk}
+								<div class="flex justify-between"><span>{vk}</span><span class="font-mono">{fmt(drillDownData.investments.contributions[vk])} versé / {fmt(drillDownData.investments.returns[vk])} retour</span></div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+
+				<div class="bg-zinc-900/40 rounded-lg p-3">
+					<div class="flex justify-between items-center">
+						<span class="text-[10px] text-zinc-400">Résultat net</span>
+						<span class="text-sm font-mono font-bold {drillDownData.summary.net_status === 'surplus' ? 'text-teal-400' : 'text-rose-400'}">
+							{fmtK(drillDownData.summary.net)}
+						</span>
+					</div>
+					<p class="text-[10px] text-zinc-500 mt-1">{drillDownData.summary.explanation}</p>
+				</div>
+			</div>
+		{/if}
 
 		<!-- ── Insights Engine (TASK-5.4) ─────────────────────────────────── -->
 		<InsightCards insights={projection?.insights || []} />

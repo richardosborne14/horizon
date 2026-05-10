@@ -87,6 +87,9 @@ class LifeEntityRead(BaseModel):
 
     current_age is computed server-side as:
     (today - reference_date).days // 365
+
+    expired is True when all cost events have a max to_age < current_age,
+    meaning the entity contributes zero to the projection.
     """
 
     id: UUID
@@ -95,6 +98,8 @@ class LifeEntityRead(BaseModel):
     name: str
     reference_date: date
     current_age: int  # computed
+    expired: bool = False  # computed — all cost events are in the past
+    expired_message: Optional[str] = None  # human-readable explanation
     metadata: dict
     cost_events: list[CostEvent]
     is_active: bool

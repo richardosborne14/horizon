@@ -354,3 +354,157 @@ async def get_caf_estimate(
         "caf_override_monthly": _serialise(profile.caf_override_monthly),
         "kid_count": len(kids_birth_dates),
     }
+
+
+# ── Waterfall endpoint (TASK-6.8) ─────────────────────────────────────────
+
+
+@router.get("/waterfall", response_model=None)
+async def get_waterfall(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a disposable income waterfall for the current year.
+
+    Shows the flow from gross CA → charges → net → expenses → life costs
+    → income additions → disposable → savings → surplus/deficit.
+
+    Uses projection year 0 data (current year) and the life entities
+    to estimate the full monthly picture.
+    """
+    from app.calculations.projection import project_timeline
+    from app.calculations.constants import INFLATION_SCALES
+    from app.schemas.profile import WaterfallMonthly, WaterfallAnnual, WaterfallResponse
+    from app.routers.projection import _assemble_input
+
+    scale = "moderate"
+
+    try:
+        inp = await _assemble_input(str(current_user.id), scale, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors de la préparation des données",
+        ) from exc
+
+    try:
+        timeline = project_timeline(inp)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur de calcul de la projection",
+        ) from exc
+
+    if not timeline:
+        raise HTTPException(status_code=500, detail="Projection vide")
+
+    entry = timeline[0]  # Year 0 = current year
+
+    # ── Monthly breakdown ────────────────────────────────────────────
+    def _m(annual_val) -> Decimal:
+        """Convert annual to monthly."""
+        d = Decimal(str(annual_val))
+        return (d / Decimal("12")).quantize(Decimal("0.01"))
+
+    gross_ca_m = _m(entry.gross_annual)
+    charges_m = _m(entry.charges)
+    cfe_m = _m(entry.cfe)
+    net_charges_m = gross_ca_m - charges_m - cfe_m
+    base_exp_m = _m(entry.base_expenses)
+    loan_m = _m(getattr(entry, "loan_expenses", Decimal("0")))
+    kid_m = _m(entry.kid_expenses)
+    pet_m = _m(entry.pet_expenses)
+    car_m = _m(entry.car_expenses)
+    tech_m = _m(entry.tech_expenses)
+    rec_m = _m(entry.recurring_expenses)
+    caf_m = _m(entry.caf_annual)
+    tax_m = _m(entry.tax_credits)
+
+    total_expenses_m = base_exp_m + loan_m + kid_m + pet_m + car_m + tech_m + rec_m
+    disposable_m = net_charges_m - total_expenses_m + caf_m + tax_m
+
+    # Savings planned from allocations
+    savings_m = Decimal("0")
+    for alloc in inp.allocations.values():
+        savings_m += alloc.get("monthly", Decimal("0"))
+
+    surplus_deficit_m = disposable_m - savings_m
+
+    monthly = WaterfallMonthly(
+        gross_ca=str(gross_ca_m),
+        charges=str(charges_m),
+        cfe_monthly=str(cfe_m),
+        net_after_charges=str(net_charges_m),
+        base_expenses=str(base_exp_m),
+        loan_payments=str(loan_m),
+        kid_costs=str(kid_m),
+        pet_costs=str(pet_m),
+        car_costs=str(car_m),
+        tech_costs=str(tech_m),
+        recurring_costs=str(rec_m),
+        caf_income=str(caf_m),
+        tax_credits=str(tax_m),
+        disposable=str(disposable_m),
+        savings_planned=str(savings_m),
+        monthly_surplus_deficit=str(surplus_deficit_m),
+    )
+
+    # ── Annual breakdown ─────────────────────────────────────────────
+    net_charges_a = entry.gross_annual - entry.charges - entry.cfe
+    total_expenses_a = (
+        entry.base_expenses
+        + getattr(entry, "loan_expenses", Decimal("0"))
+        + entry.kid_expenses
+        + entry.pet_expenses
+        + entry.car_expenses
+        + entry.tech_expenses
+        + entry.recurring_expenses
+    )
+    total_life_costs_a = (
+        entry.kid_expenses
+        + entry.pet_expenses
+        + entry.car_expenses
+        + entry.tech_expenses
+    )
+    income_additions_a = entry.caf_annual + entry.tax_credits
+    disposable_a = net_charges_a - total_expenses_a + income_additions_a
+    savings_a = savings_m * Decimal("12")
+    surplus_deficit_a = disposable_a - savings_a
+
+    annual = WaterfallAnnual(
+        gross_ca=str(entry.gross_annual),
+        charges=str(entry.charges),
+        cfe=str(entry.cfe),
+        net_after_charges=str(net_charges_a),
+        total_expenses=str(total_expenses_a),
+        total_life_costs=str(total_life_costs_a),
+        total_income_additions=str(income_additions_a),
+        disposable=str(disposable_a),
+        savings_planned=str(savings_a),
+        annual_surplus_deficit=str(surplus_deficit_a),
+    )
+
+    # ── Status ───────────────────────────────────────────────────────
+    if surplus_deficit_m > Decimal("10"):
+        status = "surplus"
+        note = ""
+    elif surplus_deficit_m < Decimal("-10"):
+        status = "deficit"
+        note = (
+            f"Vos dépenses dépassent vos revenus de {abs(surplus_deficit_m):.0f}€/mois "
+            f"avant épargne. Assurez-vous d'avoir des réserves pour couvrir ce déficit."
+        )
+    else:
+        status = "breakeven"
+        note = "Votre budget est à l'équilibre. Pas de marge pour l'imprévu."
+
+    return WaterfallResponse(
+        year=entry.year,
+        age=entry.age,
+        monthly=monthly,
+        annual=annual,
+        status=status,
+        deficit_note=note,
+    )

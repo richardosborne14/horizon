@@ -70,42 +70,89 @@
 
   // ── Event handlers ─────────────────────────────────────────────────────────
 
-  function onLabelChange(idx: number, value: string) {
+  /** Find the index of event with given id in the original `events` array. */
+  function originalIndex(eventId: string): number {
+    return events.findIndex(e => e.id === eventId);
+  }
+
+  function onLabelChange(eventId: string, value: string) {
+    const idx = originalIndex(eventId);
+    if (idx === -1) return;
     events[idx].label = value;
     dispatch('change', { events: [...events] });
   }
 
-  function onAmountChange(idx: number, value: string) {
+  function onAmountChange(eventId: string, value: string) {
+    const idx = originalIndex(eventId);
+    if (idx === -1) return;
     events[idx].amount = value;
     dispatch('change', { events: [...events] });
   }
 
-  function onRemove(idx: number) {
-    const updated = events.filter((_, i) => i !== idx);
+  function onAgeChange(eventId: string, field: 'from_age' | 'to_age', value: number) {
+    const idx = originalIndex(eventId);
+    if (idx === -1) return;
+    events[idx][field] = value;
+    dispatch('change', { events: [...events] });
+  }
+
+  function onFrequencyChange(eventId: string, value: string) {
+    const idx = originalIndex(eventId);
+    if (idx === -1) return;
+    events[idx].frequency = value;
+    dispatch('change', { events: [...events] });
+  }
+
+  function onRemove(eventId: string) {
+    const updated = events.filter(e => e.id !== eventId);
     dispatch('change', { events: updated });
+  }
+
+  function handleAdd() {
+    dispatch('addCustom');
   }
 
 </script>
 
 <div class="space-y-0.5" data-coco-desc="Liste des dépenses liées à cet élément de vie">
-  {#each sortedEvents as event, i}
+  {#each sortedEvents as event}
     <div
       class="flex items-center gap-2 text-xs p-2 rounded {stateRowClass(event)}"
       data-coco-desc={`Dépense ${event.label} : ${event.amount}€/${event.frequency === 'monthly' ? 'mois' : event.frequency === 'annual' ? 'an' : 'une fois'} de ${event.from_age} à ${event.to_age} ans`}
     >
-      <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {stateDotClass(event)}" />
+      <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 {stateDotClass(event)}"></span>
 
       <input
         type="text"
         value={event.label}
         class="flex-1 bg-transparent text-zinc-300 text-xs focus:outline-none focus:text-zinc-100 min-w-0"
-        on:blur={(e) => onLabelChange(i, (e.target as HTMLInputElement).value)}
+        on:blur={(e) => onLabelChange(event.id, (e.target as HTMLInputElement).value)}
         disabled={readonly}
       />
 
-      <span class="text-zinc-500 text-[10px] font-mono flex-shrink-0">
-        {event.from_age}→{event.to_age} ans
-      </span>
+      <!-- Age range inputs -->
+      <input
+        type="number"
+        min="0"
+        max="99"
+        value={event.from_age}
+        class="w-10 bg-zinc-800/40 border border-zinc-700/30 rounded px-1 py-0.5 text-xs text-center font-mono flex-shrink-0 focus:border-purple-500/50 focus:outline-none"
+        on:blur={(e) => onAgeChange(event.id, 'from_age', parseInt((e.target as HTMLInputElement).value) || 0)}
+        disabled={readonly}
+        data-coco-desc={`Âge de début pour ${event.label}`}
+      />
+      <span class="text-zinc-600 text-[10px] flex-shrink-0">→</span>
+      <input
+        type="number"
+        min="0"
+        max="99"
+        value={event.to_age}
+        class="w-10 bg-zinc-800/40 border border-zinc-700/30 rounded px-1 py-0.5 text-xs text-center font-mono flex-shrink-0 focus:border-purple-500/50 focus:outline-none"
+        on:blur={(e) => onAgeChange(event.id, 'to_age', parseInt((e.target as HTMLInputElement).value) || 0)}
+        disabled={readonly}
+        data-coco-desc={`Âge de fin pour ${event.label}`}
+      />
+      <span class="text-zinc-500 text-[10px] flex-shrink-0">ans</span>
 
       <input
         type="number"
@@ -113,16 +160,27 @@
         min="0"
         value={parseFloat(event.amount) || 0}
         class="w-16 bg-zinc-800/40 border border-zinc-700/30 rounded px-1.5 py-0.5 text-xs font-mono text-right flex-shrink-0 focus:border-purple-500/50 focus:outline-none"
-        on:blur={(e) => onAmountChange(i, (e.target as HTMLInputElement).value)}
+        on:blur={(e) => onAmountChange(event.id, (e.target as HTMLInputElement).value)}
         disabled={readonly}
       />
 
-      <span class="text-[10px] text-zinc-500 flex-shrink-0">{freqLabel(event.frequency)}</span>
+      <!-- Editable frequency selector -->
+      <select
+        value={event.frequency}
+        class="w-20 bg-zinc-800/40 border border-zinc-700/30 rounded px-1 py-0.5 text-[10px] text-zinc-300 flex-shrink-0 focus:border-purple-500/50 focus:outline-none"
+        on:change={(e) => onFrequencyChange(event.id, (e.target as HTMLSelectElement).value)}
+        disabled={readonly}
+        data-coco-desc={`Fréquence de la dépense ${event.label}`}
+      >
+        <option value="monthly">€/mois</option>
+        <option value="annual">€/an</option>
+        <option value="once">une fois</option>
+      </select>
 
       {#if !readonly}
         <button
           class="text-zinc-600 hover:text-rose-400 flex-shrink-0 text-xs"
-          on:click={() => onRemove(i)}
+          on:click={() => onRemove(event.id)}
           data-coco-desc={`Supprimer la dépense ${event.label}`}
         >✕</button>
       {/if}
@@ -132,9 +190,7 @@
   {#if !readonly}
     <button
       class="w-full text-center text-[10px] text-zinc-500 hover:text-zinc-300 py-1.5 border border-dashed border-zinc-700/50 rounded hover:border-zinc-600/50 transition-colors"
-      on:click={() => {
-        dispatch('addCustom');
-      }}
+      on:click={handleAdd}
       data-coco-desc="Ajouter une dépense personnalisée pour cet élément"
     >
       + {$_('life.kids.add_custom_expense', 'Ajouter une dépense')}

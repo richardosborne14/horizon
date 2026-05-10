@@ -39,9 +39,22 @@ export const load: PageServerLoad = async ({ fetch, cookies }) => {
 
   const projection = await res.json();
 
+  // Sprint 6: Fetch pension estimate and net worth summary
+  const [pensionRes, netWorthRes] = await Promise.all([
+    fetch(`${BACKEND_URL}/api/projection/pension-estimate`, { headers }),
+    fetch(`${BACKEND_URL}/api/net-worth/summary`, { headers }),
+  ]);
+
+  let pensionEstimate = null;
+  let netWorth = null;
+  if (pensionRes.ok) pensionEstimate = await pensionRes.json();
+  if (netWorthRes.ok) netWorth = await netWorthRes.json();
+
   return {
     projection,
     profile,
+    pensionEstimate,
+    netWorth,
     error: null
   };
 };

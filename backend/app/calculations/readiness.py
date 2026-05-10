@@ -68,6 +68,7 @@ def compute_readiness_score(
     profile_data: dict[str, Any],
     allocations: list[dict[str, Any]],
     monthly_revenue_goal: Decimal | None = None,
+    extra_liquid: Decimal | None = None,
 ) -> ReadinessScore:
     """Compute retirement readiness score from projection data.
 
@@ -77,6 +78,7 @@ def compute_readiness_score(
         profile_data: Flat dict with monthly_gross, growth_rate, target_age, current_age.
         allocations: List of allocation dicts with vehicle_key, monthly, balance.
         monthly_revenue_goal: User's monthly revenue goal (None = no goal set).
+        extra_liquid: Additional liquid cash (from net worth snapshot) for buffer adequacy.
 
     Returns:
         ReadinessScore with score, label, color, components, summary.
@@ -115,7 +117,7 @@ def compute_readiness_score(
     growth_trajectory = _compute_growth_trajectory(timeline)
 
     # ── Component 6: Buffer adequacy (10%) ──────────────────────────
-    buffer_adequacy = _compute_buffer_adequacy(allocations, timeline)
+    buffer_adequacy = _compute_buffer_adequacy(allocations, timeline, extra_liquid)
 
     # Weighted average
     weights = {
@@ -327,17 +329,22 @@ def _compute_growth_trajectory(timeline: list[Any]) -> int:
 def _compute_buffer_adequacy(
     allocations: list[dict[str, Any]],
     timeline: list[Any],
+    extra_liquid: Decimal | None = None,
 ) -> int:
     """Buffer adequacy (10%): emergency fund vs 6 months expenses.
 
-    100 = ≥ 6 months in liquid (Livret A + LDDS + AV euro).
+    100 = ≥ 6 months in liquid (Livret A + LDDS + AV euro + cash reserves).
     0 = < 1 month. Linear in between.
     """
-    # Sum liquid balances
+    # Sum liquid balances from investment vehicles
     liquid = Decimal("0")
     for a in allocations:
         if a.get("vehicle_key") in ("livret_a", "ldds", "av_euro"):
             liquid += Decimal(str(a.get("balance", 0)))
+
+    # Add extra liquid (cash reserves from net worth snapshot)
+    if extra_liquid is not None and extra_liquid > 0:
+        liquid += extra_liquid
 
     # Monthly expenses from first year
     if not timeline:

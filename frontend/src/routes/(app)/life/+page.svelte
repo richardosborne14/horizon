@@ -126,7 +126,7 @@
       id: 'evt-' + Math.random().toString(36).slice(2, 10),
       label: 'Nouvelle dépense',
       from_age: 0,
-      to_age: 18,
+      to_age: 99,
       amount: '0.00',
       frequency: 'monthly',
       source: 'user',
@@ -172,7 +172,6 @@
     await addEntity('kid', { name: newKidName, reference_date: newKidBirth, metadata: {} });
     newKidName = '';
     newKidBirth = '';
-    showKidForm;
     showKidForm = false;
   }
 
@@ -233,6 +232,50 @@
     debounceTimers[id] = setTimeout(() => {
       updateRecurring(id, { [field]: value });
     }, 800);
+  }
+
+  // ── Expired car cycle extension (TASK-6.4) ─────────────────────────────────
+
+  /**
+   * Extend an expired car's cost events to the rolling replacement model.
+   * Replaces cost events with permanent ongoing costs (insurance, fuel, maintenance)
+   * and pre-generated replacement + CT events through age 40.
+   */
+  async function extendCarCycle(car: any) {
+    // Build rolling model cost events matching the canned defaults
+    const fuel = car.metadata?.fuel_type || 'petrol';
+    const fuelCosts: Record<string, string> = { petrol: '1200.00', diesel: '1000.00', electric: '400.00', hybrid: '800.00' };
+    const maintCosts: Record<string, string> = { petrol: '400.00', diesel: '400.00', electric: '200.00', hybrid: '350.00' };
+    const fuelAmount = fuelCosts[fuel] || '1000.00';
+    const maintAmount = maintCosts[fuel] || '400.00';
+    const replaceCycle = car.metadata?.replace_cycle || 8;
+    const replaceCost = car.metadata?.replace_cost || 18000;
+
+    const newEvents: any[] = [
+      { id: 'c-insurance', label: 'Assurance auto', from_age: 0, to_age: 99, amount: '600.00', frequency: 'annual', is_active: true },
+      { id: 'c-fuel', label: 'Carburant / Énergie', from_age: 0, to_age: 99, amount: fuelAmount, frequency: 'annual', is_active: true },
+      { id: 'c-maintenance', label: 'Entretien courant (révisions, pneus, freins)', from_age: 0, to_age: 99, amount: maintAmount, frequency: 'annual', is_active: true },
+    ];
+
+    // CT events every 2 years from age 4 through 40
+    let ctAge = 4;
+    let ctCount = 1;
+    while (ctAge <= 40) {
+      newEvents.push({ id: `c-ct-${ctCount}`, label: `Contrôle technique à ${ctAge} ans`, from_age: ctAge, to_age: ctAge, amount: '80.00', frequency: 'once', is_active: true });
+      ctAge += 2;
+      ctCount++;
+    }
+
+    // Replacement events at replace_cycle intervals through age 40
+    let replAge = replaceCycle;
+    let replCount = 1;
+    while (replAge <= 40) {
+      newEvents.push({ id: `c-replace-${replCount}`, label: `Remplacement véhicule (tous les ${replaceCycle} ans)`, from_age: replAge, to_age: replAge, amount: String(replaceCost), frequency: 'once', is_active: true });
+      replAge += replaceCycle;
+      replCount++;
+    }
+
+    await updateCostEvents(car.id, newEvents);
   }
 
   // ── i18n keys ──────────────────────────────────────────────────────────────
@@ -401,7 +444,27 @@
     <h3 class="text-sm font-semibold text-amber-300 mb-1">{$_('life.cars.title', 'Véhicules')} 🚗</h3>
 
     {#each cars as car (car.id)}
-      <div class="bg-zinc-900/70 border border-zinc-800/50 rounded-lg p-3 mb-3" data-coco-desc={`Fiche véhicule : ${car.name}, ${car.current_age} ans`}>
+      <div
+        class="bg-zinc-900/70 border rounded-lg p-3 mb-3 {car.expired ? 'border-amber-600/50' : 'border-zinc-800/50'}"
+        data-coco-desc={`Fiche véhicule : ${car.name}, ${car.current_age} ans${car.expired ? ' — EXPIRÉ, aucun coût dans la projection' : ''}`}
+      >
+        {#if car.expired}
+          <div class="bg-amber-950/40 border border-amber-700/30 rounded-md p-2 mb-2 text-xs text-amber-200/90">
+            ⚠️ {car.expired_message || 'Ce véhicule a dépassé son cycle de vie. Il ne génère aucun coût dans la projection.'}
+            <div class="flex gap-2 mt-1.5">
+              <button
+                class="bg-amber-700/40 hover:bg-amber-600/40 text-amber-200 text-xs rounded px-2 py-0.5 transition-colors"
+                on:click={() => extendCarCycle(car)}
+                data-coco-desc={`Mettre à jour le cycle de vie de ${car.name} pour inclure les coûts permanents et remplacements futurs`}
+              >Mettre à jour le cycle</button>
+              <button
+                class="text-zinc-500 hover:text-rose-400 text-xs px-2 py-0.5"
+                on:click={() => deleteConfirm = { type: 'entity', id: car.id, name: car.name }}
+                data-coco-desc={`Archiver ${car.name} (ne plus posséder ce véhicule)`}
+              >Archiver</button>
+            </div>
+          </div>
+        {/if}
         <div class="flex flex-wrap items-center gap-2 mb-2">
           <input
             type="text"

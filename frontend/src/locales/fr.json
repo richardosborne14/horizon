@@ -163,7 +163,10 @@
     },
     "cars": {
       "title": "Véhicules",
-      "add": "Ajouter un véhicule"
+      "add": "Ajouter un véhicule",
+      "expired_warning": "Ce véhicule a dépassé son cycle de vie. Il ne génère aucun coût dans la projection.",
+      "expired_extend": "Mettre à jour le cycle",
+      "expired_archive": "Archiver ce véhicule"
     },
     "tech": {
       "title": "Tech",

@@ -78,16 +78,55 @@ class MonthlyExpenses(BaseModel):
             for field in EXPENSE_CATEGORIES
         )
 
-    @model_validator(mode="after")
-    def check_no_negative(self):
-        """Ensure no expense value is negative after coercion."""
-        for field in EXPENSE_CATEGORIES:
-            val = getattr(self, field)
-            if val < 0:
-                raise ValueError(
-                    f"Expense '{field}' must be >= 0, got {val}"
-                )
-        return self
+
+# ── Waterfall schemas (TASK-6.8) ──────────────────────────────────────────
+
+
+class WaterfallMonthly(BaseModel):
+    """Monthly disposable income waterfall for a specific year."""
+
+    gross_ca: str  # Decimal as string
+    charges: str
+    cfe_monthly: str
+    net_after_charges: str
+    base_expenses: str
+    loan_payments: str
+    kid_costs: str
+    pet_costs: str
+    car_costs: str
+    tech_costs: str
+    recurring_costs: str
+    caf_income: str
+    tax_credits: str
+    disposable: str
+    savings_planned: str
+    monthly_surplus_deficit: str
+
+
+class WaterfallAnnual(BaseModel):
+    """Annual equivalents of the waterfall."""
+
+    gross_ca: str
+    charges: str
+    cfe: str
+    net_after_charges: str
+    total_expenses: str
+    total_life_costs: str
+    total_income_additions: str
+    disposable: str
+    savings_planned: str
+    annual_surplus_deficit: str
+
+
+class WaterfallResponse(BaseModel):
+    """Complete disposable income waterfall."""
+
+    year: int
+    age: int
+    monthly: WaterfallMonthly
+    annual: WaterfallAnnual
+    status: str  # "surplus", "deficit", "breakeven"
+    deficit_note: str = ""
 
 
 # ── Profile schemas ───────────────────────────────────────────────────────────

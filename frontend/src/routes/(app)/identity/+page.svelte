@@ -15,7 +15,9 @@
 	// ── Local state synced from server data ──────────────────────────────────
 	let profile = data.profile ?? {};
 	let rateSchedule = data.rateSchedule ?? [];
-	let allSchedules = data.allSchedules ?? {};
+	let allSchedules = data.allSchedules ?? [];
+	let careerPeriods: any[] = (data as any).careerPeriods ?? [];
+	let careerSummary: any = (data as any).careerSummary ?? null;
 
 	// Status options
 	const statusOptions = [
@@ -87,6 +89,78 @@
 			rateSchedule = resp.schedule;
 		} catch (err) {
 			console.error('[identity] Failed to fetch rate schedule:', err);
+		}
+	}
+
+	// ── Career CRUD (TASK-6.1) ─────────────────────────────────────────────
+	let showCareerForm = false;
+	let newCareerType = 'cdi';
+	let newCareerStart = '';
+	let newCareerEnd = '';
+	let newCareerEmployer = '';
+	let newCareerTitle = '';
+	let newCareerSalary = 0;
+	let newCareerFullTime = true;
+	let newCareerTimePct = 100;
+
+	const careerTypeOptions = [
+		{ value: 'cdi', label: 'CDI' },
+		{ value: 'cdd', label: 'CDD' },
+		{ value: 'interim', label: 'Intérim' },
+		{ value: 'ae', label: 'Auto-entrepreneur' },
+		{ value: 'sasu', label: 'SASU (président salarié)' },
+		{ value: 'unemployment', label: 'Chômage (ARE)' },
+		{ value: 'parental_leave', label: 'Congé parental' },
+		{ value: 'education', label: 'Études' },
+		{ value: 'other', label: 'Autre' },
+	];
+
+	const careerColorMap: Record<string, string> = {
+		cdi: 'teal', cdd: 'emerald', interim: 'purple', ae: 'emerald',
+		sasu: 'sky', unemployment: 'amber', parental_leave: 'rose',
+		education: 'zinc', other: 'zinc',
+	};
+
+	async function addCareerPeriod() {
+		if (!newCareerStart) return;
+		const payload: Record<string, any> = {
+			period_type: newCareerType,
+			start_date: newCareerStart,
+			is_full_time: newCareerFullTime,
+			time_percentage: newCareerTimePct,
+		};
+		if (newCareerEnd) payload.end_date = newCareerEnd;
+		if (newCareerEmployer) payload.employer_name = newCareerEmployer;
+		if (newCareerTitle) payload.job_title = newCareerTitle;
+		if (newCareerSalary > 0) payload.annual_gross = newCareerSalary;
+
+		try {
+			const period = await api.post('/career', payload);
+			if (period) {
+				careerPeriods = [...careerPeriods, period];
+				// Re-fetch summary
+				const summary = await api.get('/career/summary');
+				if (summary) careerSummary = summary;
+			}
+			newCareerStart = '';
+			newCareerEnd = '';
+			newCareerEmployer = '';
+			newCareerTitle = '';
+			newCareerSalary = 0;
+			showCareerForm = false;
+		} catch (err) {
+			console.error('[identity] Career create failed:', err);
+		}
+	}
+
+	async function deleteCareerPeriod(id: string) {
+		try {
+			await api.delete(`/career/${id}`);
+			careerPeriods = careerPeriods.filter((p: any) => p.id !== id);
+			const summary = await api.get('/career/summary');
+			if (summary) careerSummary = summary;
+		} catch (err) {
+			console.error('[identity] Career delete failed:', err);
 		}
 	}
 
@@ -273,6 +347,90 @@
 				</div>
 				<p class="text-[9px] text-zinc-600 mt-2">Projections basées sur les tendances législatives. Les taux réels peuvent varier.</p>
 			</div>
+		{/if}
+	</Card>
+
+	<!-- Card 3: Parcours professionnel (TASK-6.1) -->
+	<Card title="Parcours professionnel" icon="📋" accent="teal" dataCocoDesc="Historique d'emploi pour le calcul de la retraite. Chaque période validée compte.">
+		<p class="text-[11px] text-zinc-400 mb-3">Votre historique alimente le calcul de votre retraite. Chaque période validée compte.</p>
+
+		{#if careerSummary}
+			<div class="bg-teal-950/20 border border-teal-800/20 rounded-lg p-3 mb-3">
+				<div class="flex items-center gap-4 flex-wrap">
+					<div class="text-center">
+						<span class="block text-lg font-bold font-mono text-teal-300">{careerSummary.total_trimestres_estimated ?? 0}</span>
+						<span class="text-[10px] text-zinc-500">trimestres validés</span>
+					</div>
+					<div class="text-center">
+						<span class="block text-lg font-bold font-mono text-zinc-400">{careerSummary.trimestres_required ?? 172}</span>
+						<span class="text-[10px] text-zinc-500">requis</span>
+					</div>
+					<div class="flex-1 h-2 bg-zinc-800 rounded-full overflow-hidden min-w-[100px]">
+						<div
+							class="h-full bg-teal-500 rounded-full transition-all duration-500"
+							style="width: {Math.min(100, ((careerSummary.total_trimestres_estimated ?? 0) / (careerSummary.trimestres_required || 1)) * 100)}%"
+						></div>
+					</div>
+				</div>
+				{#if careerSummary.current_period}
+					<p class="text-[10px] text-zinc-500 mt-2">
+						Situation actuelle : <strong class="text-zinc-300">{careerSummary.current_period.type?.toUpperCase()}</strong> depuis {careerSummary.current_period.since?.substring(0, 4)}
+					</p>
+				{/if}
+			</div>
+		{/if}
+
+		{#if careerPeriods.length > 0}
+			<div class="space-y-2 mb-3">
+				{#each careerPeriods as period (period.id)}
+					<div class="flex items-center gap-2 p-2 bg-zinc-900/60 border border-zinc-700/30 rounded-lg" data-coco-desc={`Période ${period.period_type} ${period.employer_name || ''} ${period.start_date?.substring(0, 4) || ''}-${period.end_date?.substring(0, 4) || 'actuel'}`}>
+						<span class="w-2 h-2 rounded-full flex-shrink-0 bg-{careerColorMap[period.period_type] || 'zinc'}-500"></span>
+						<span class="text-xs text-zinc-300 flex-1">
+							{period.period_type?.toUpperCase()}
+							{#if period.employer_name} — {period.employer_name}{/if}
+							{#if period.job_title} ({period.job_title}){/if}
+						</span>
+						<span class="text-[10px] text-zinc-500">
+							{period.start_date?.substring(0, 4) || '?'}–{period.end_date?.substring(0, 4) || 'actuel'}
+						</span>
+						<span class="text-[10px] text-zinc-500 font-mono">
+							{#if period.annual_gross}{parseFloat(period.annual_gross).toLocaleString('fr-FR')}€/an{/if}
+						</span>
+						<span class="text-[10px] text-zinc-600 bg-zinc-800/40 px-1 py-0.5 rounded">{period.trimestres_estimated ?? 0} trim.</span>
+						<button
+							class="text-zinc-600 hover:text-rose-400 text-xs"
+							onclick={() => deleteCareerPeriod(period.id)}
+							data-coco-desc={`Supprimer la période ${period.period_type} ${period.start_date?.substring(0, 4)}`}
+						>✕</button>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="text-xs text-zinc-500 italic mb-2">Aucune période enregistrée. Ajoutez votre parcours professionnel pour un calcul de retraite précis.</p>
+		{/if}
+
+		{#if showCareerForm}
+			<div class="flex flex-wrap items-end gap-2 mt-3 p-3 bg-zinc-900/40 border border-zinc-700/30 rounded-lg">
+				<select bind:value={newCareerType} class="bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200">
+					{#each careerTypeOptions as opt}
+						<option value={opt.value}>{opt.label}</option>
+					{/each}
+				</select>
+				<input type="date" bind:value={newCareerStart} placeholder="Début" class="w-32 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<input type="date" bind:value={newCareerEnd} placeholder="Fin" class="w-32 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<input type="text" bind:value={newCareerEmployer} placeholder="Employeur" class="w-28 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<input type="number" bind:value={newCareerSalary} min="0" step="1000" placeholder="Salaire/CA annuel" class="w-28 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200" />
+				<button class="bg-teal-600 text-white text-xs rounded px-3 py-1 hover:bg-teal-500" onclick={addCareerPeriod}>Ajouter</button>
+				<button class="text-zinc-500 text-xs" onclick={() => showCareerForm = false}>Annuler</button>
+			</div>
+		{:else}
+			<button
+				class="w-full text-center text-xs text-zinc-500 hover:text-zinc-300 py-2 border border-dashed border-zinc-700/50 rounded-lg hover:border-teal-700/50 transition-colors mt-2"
+				onclick={() => showCareerForm = true}
+				data-coco-desc="Ouvrir le formulaire d'ajout de période professionnelle"
+			>
+				+ Ajouter une période
+			</button>
 		{/if}
 	</Card>
 </div>

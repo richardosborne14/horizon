@@ -22,6 +22,7 @@ Regime rules (2024):
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -266,4 +267,391 @@ def estimate_monthly_pension(
         "taux": taux.quantize(Decimal("0.0001")),
         "confidence": "low",
         "is_taux_plein": is_taux_plein,
+    }
+
+
+# ── Pension Engine v2 (TASK-6.2) — Career-Aware Estimation ───────────────────
+
+# AGIRC-ARRCO complementary pension constants (2024 values)
+AGIRC_POINT_PRICE: Decimal = Decimal("19.63")  # Purchase price per point
+AGIRC_POINT_VALUE: Decimal = Decimal("1.4159")  # Value at retirement per point
+AGIRC_COTISATION_RATE: Decimal = Decimal("0.0787")  # Employee share on tranche 1
+
+# SMIC horaire 2024 — used for trimestre validation from salaried work
+# 1 trimestre per 150 × SMIC horaire of annual salary
+SMIC_HORAIRE_2024: Decimal = Decimal("11.65")
+SALARIE_TRIMESTRE_THRESHOLD: Decimal = Decimal("150") * SMIC_HORAIRE_2024 * Decimal("4")  # ~6,990€
+
+# AE trimestre thresholds (2024 values)
+AE_TRIMESTRE_THRESHOLDS: dict[str, Decimal] = {
+    "bnc_non_reglementee": Decimal("2880"),
+    "bic_services": Decimal("2540"),
+    "bic_vente": Decimal("4208"),
+    "bnc_cipav": Decimal("2880"),
+}
+
+# AE abattement rates (revenue pris en compte for SAM)
+AE_ABATTEMENT_RATES: dict[str, Decimal] = {
+    "bnc_non_reglementee": Decimal("0.34"),  # 34% abattement → 66% retained
+    "bic_services": Decimal("0.50"),          # 50% abattement → 50% retained
+    "bic_vente": Decimal("0.71"),             # 71% abattement → 29% retained
+    "bnc_cipav": Decimal("0.34"),
+}
+
+# Unemployment: 1 trimestre per 50 days of indemnisation
+# Max 4 trimestres/year
+UNEMPLOYMENT_DAYS_PER_TRIMESTRE: int = 50
+
+# Parental leave: up to 8 trimestres "gratuits" per child (AVPF)
+MAX_AVPF_TRIMESTRES_TOTAL: int = 8
+
+# Minimum pension floor (ASPA minimum vieillesse proxy)
+ASPA_MONTHLY_2024: Decimal = Decimal("1012.02")  # For single person
+
+
+def _compute_salarie_trimestres(
+    annual_gross: Decimal,
+    threshold: Decimal,
+    is_full_time: bool,
+    time_percentage: int,
+) -> int:
+    """Compute trimestres for one year of salaried work.
+
+    1 trimestre per 150 × SMIC horaire of annual gross salary.
+    Full-time CDI at 35k+ = 4 trimestres/year automatically.
+    Part-time is proportional.
+
+    Args:
+        annual_gross: Gross annual salary.
+        threshold: Year's threshold for 1 trimestre (inflates with SMIC).
+        is_full_time: Whether full-time.
+        time_percentage: Part-time percentage (100 = full time).
+
+    Returns:
+        Trimestres validated (0-4).
+    """
+    if annual_gross <= 0:
+        return 0
+    # Adjust for part-time
+    adjusted_gross = annual_gross * Decimal(str(time_percentage)) / Decimal("100")
+    return min(MAX_TRIMESTRES_PER_YEAR, int(float(adjusted_gross) / float(threshold)))
+
+
+def _compute_ae_trimestres(
+    annual_ca: Decimal,
+    activity_type: str,
+    threshold: Decimal,
+) -> int:
+    """Compute trimestres for one year of AE activity.
+
+    Args:
+        annual_ca: Annual chiffre d'affaires.
+        activity_type: AE activity type.
+        threshold: Year's threshold for 1 trimestre (inflates with SMIC).
+
+    Returns:
+        Trimestres validated (0-4).
+    """
+    if annual_ca <= 0:
+        return 0
+    return min(MAX_TRIMESTRES_PER_YEAR, int(float(annual_ca) / float(threshold)))
+
+
+def _compute_unemployment_trimestres(
+    start_date: date,
+    end_date: date,
+    daily_allocation: Decimal | None,
+) -> int:
+    """Compute trimestres from unemployment.
+
+    1 trimestre per 50 days of indemnisation. Without daily allocation data,
+    estimate 1 trimestre per full quarter of unemployment.
+
+    Args:
+        start_date: Start of unemployment period.
+        end_date: End of unemployment period.
+        daily_allocation: Daily ARE allocation (optional).
+
+    Returns:
+        Estimated trimestres.
+    """
+    from datetime import date as date_type
+    days = (end_date - start_date).days
+    if days <= 0:
+        return 0
+    if daily_allocation and daily_allocation > 0:
+        # Precise: 1 per 50 days
+        return min(int(days / UNEMPLOYMENT_DAYS_PER_TRIMESTRE), MAX_TRIMESTRES_PER_YEAR)
+    # Without data: estimate 1 per quarter
+    return min(int(days / 90), MAX_TRIMESTRES_PER_YEAR)
+
+
+def _compute_avpf_trimestres(
+    start_date: date,
+    end_date: date,
+    total_avpf_so_far: int,
+) -> int:
+    """Compute AVPF trimestres for parental leave.
+
+    Up to 8 trimestres total per parent. 1 trimestre per quarter of leave.
+
+    Args:
+        start_date: Start of parental leave.
+        end_date: End of parental leave.
+        total_avpf_so_far: AVPF trimestres already counted.
+
+    Returns:
+        AVPF trimestres for this period.
+    """
+    from datetime import date as date_type
+    days = (end_date - start_date).days
+    if days <= 0:
+        return 0
+    quarters = int(days / 90)
+    remaining = max(0, MAX_AVPF_TRIMESTRES_TOTAL - total_avpf_so_far)
+    return min(quarters, remaining)
+
+
+def _inflate_threshold(
+    base_threshold: Decimal,
+    year_index: int,
+    inflation_rate: Decimal,
+) -> Decimal:
+    """Inflate a threshold for a given year from the base.
+
+    Args:
+        base_threshold: Base year threshold.
+        year_index: Years from base (0 = base year).
+        inflation_rate: Annual inflation rate.
+
+    Returns:
+        Inflated threshold.
+    """
+    return base_threshold * ((Decimal("1") + inflation_rate) ** year_index)
+
+
+def estimate_monthly_pension_v2(
+    birth_year: int,
+    career_periods: list[dict[str, Any]],
+    projected_ae_ca: list[dict[str, Any]],  # [{year, ca}]
+    ae_activity_type: str,
+    retirement_age: int,
+    current_year: int,
+    inflation_rate: Decimal = Decimal("0.025"),
+) -> dict[str, Any]:
+    """Career-aware pension estimation (TASK-6.2).
+
+    Uses the full career history — salaried periods (CDI/CDD/SASU),
+    AE periods (past + projected), unemployment, parental leave — to
+    compute a much more accurate pension estimate.
+
+    Args:
+        birth_year: Year of birth.
+        career_periods: List of career period dicts with keys:
+            period_type, start_date, end_date, annual_gross,
+            is_full_time, time_percentage, pension_regime.
+        projected_ae_ca: Projected future AE annual CA (year, ca).
+        ae_activity_type: AE activity type (e.g., bnc_non_reglementee).
+        retirement_age: Planned retirement age.
+        current_year: Current year for projection alignment.
+        inflation_rate: Annual inflation rate for threshold revalorisation.
+
+    Returns:
+        Dict with breakdown: base_salarie, base_ae, complementaire,
+        trimestres breakdown, taux, decote, confidence.
+    """
+    from datetime import date as date_type
+
+    trimestres_requis = get_trimestres_requis(birth_year)
+
+    # ── Gather income data year by year ─────────────────────────────────
+    # We collect all income sources into a year-indexed structure
+    # Year 0 = start of projection (current_year)
+    all_salaries: dict[int, Decimal] = {}   # year → gross salary
+    all_ae_ca: dict[int, Decimal] = {}       # year → AE CA
+    trimestres_salarie = 0
+    trimestres_ae_total = 0
+    trimestres_other = 0
+    avpf_so_far = 0
+
+    ae_threshold_base = AE_TRIMESTRE_THRESHOLDS.get(
+        ae_activity_type, AE_TRIMESTRE_THRESHOLDS["bnc_non_reglementee"]
+    )
+    salarie_threshold_base = SALARIE_TRIMESTRE_THRESHOLD
+
+    for cp in career_periods:
+        ptype = cp.get("period_type", "")
+        start = cp.get("start_date")
+        end = cp.get("end_date")
+        annual_gross = cp.get("annual_gross", Decimal("0"))
+        if isinstance(annual_gross, (int, float)):
+            annual_gross = Decimal(str(annual_gross))
+        is_full = cp.get("is_full_time", True)
+        time_pct = cp.get("time_percentage", 100)
+
+        if isinstance(start, str):
+            start = date_type.fromisoformat(start)
+        if end and isinstance(end, str):
+            end = date_type.fromisoformat(end)
+        if end is None:
+            end = date_type.today()
+
+        # Iterate through each year of this period
+        start_yr = start.year
+        end_yr = end.year
+        for yr in range(start_yr, end_yr + 1):
+            year_index = yr - start_yr
+
+            if ptype in ("cdi", "cdd", "sasu", "interim", "apprenticeship"):
+                # Salaried work → regime général
+                threshold = _inflate_threshold(salarie_threshold_base, year_index, inflation_rate)
+                t = _compute_salarie_trimestres(annual_gross, threshold, is_full, time_pct)
+                trimestres_salarie += t
+                if annual_gross > 0:
+                    all_salaries[yr] = all_salaries.get(yr, Decimal("0")) + annual_gross
+
+            elif ptype == "ae":
+                # AE period
+                threshold = _inflate_threshold(ae_threshold_base, year_index, inflation_rate)
+                t = _compute_ae_trimestres(annual_gross, ae_activity_type, threshold)
+                trimestres_ae_total += t
+                if annual_gross > 0:
+                    all_ae_ca[yr] = all_ae_ca.get(yr, Decimal("0")) + annual_gross
+
+            elif ptype == "unemployment":
+                # Unemployment
+                daily = cp.get("daily_allocation")
+                if isinstance(daily, (int, float)):
+                    daily = Decimal(str(daily))
+                t = _compute_unemployment_trimestres(start, end, daily)
+                trimestres_other += t
+
+            elif ptype == "parental_leave":
+                t = _compute_avpf_trimestres(start, end, avpf_so_far)
+                avpf_so_far += t
+                trimestres_other += t
+
+    # ── Add projected AE CA ────────────────────────────────────────────
+    for proj in projected_ae_ca:
+        yr = proj.get("year", 0)
+        ca = proj.get("ca", Decimal("0"))
+        if isinstance(ca, (int, float)):
+            ca = Decimal(str(ca))
+        year_index = yr - current_year
+        threshold = _inflate_threshold(ae_threshold_base, year_index, inflation_rate)
+        t = _compute_ae_trimestres(ca, ae_activity_type, threshold)
+        trimestres_ae_total += t
+        if ca > 0:
+            all_ae_ca[yr] = all_ae_ca.get(yr, Decimal("0")) + ca
+
+    total_trimestres = trimestres_salarie + trimestres_ae_total + trimestres_other
+
+    # ── SAM: régime général (best 25 years, capped at PASS) ────────────
+    all_income_for_sam: list[Decimal] = []
+
+    for yr, salary in all_salaries.items():
+        # PASS inflates over time
+        year_index = yr - min(all_salaries.keys()) if all_salaries else 0
+        pass_val = _inflate_threshold(PASS, max(0, year_index), inflation_rate)
+        all_income_for_sam.append(min(salary, pass_val))
+
+    # AE income for SAM (revenue pris en compte: CA × (1 - abattement))
+    abattement_rate = AE_ABATTEMENT_RATES.get(
+        ae_activity_type, AE_ABATTEMENT_RATES["bnc_non_reglementee"]
+    )
+    retention_rate = Decimal("1") - abattement_rate
+    for yr, ca in all_ae_ca.items():
+        retained = ca * retention_rate
+        year_index = yr - min(all_ae_ca.keys()) if all_ae_ca else 0
+        pass_val = _inflate_threshold(PASS, max(0, year_index), inflation_rate)
+        all_income_for_sam.append(min(retained, pass_val))
+
+    # Sort descending and take best 25
+    all_income_for_sam.sort(reverse=True)
+    best_25 = all_income_for_sam[:25]
+    if best_25:
+        sam = sum(best_25, Decimal("0")) / Decimal(str(len(best_25)))
+    else:
+        sam = Decimal("0")
+
+    # ── Taux de pension ──────────────────────────────────────────────
+    is_taux_plein_age = retirement_age >= AGE_TAUX_PLEIN_AUTO
+    is_taux_plein_trimestres = total_trimestres >= trimestres_requis
+    is_taux_plein = is_taux_plein_age or is_taux_plein_trimestres
+
+    missing_trimestres = max(0, trimestres_requis - total_trimestres)
+    decote_pct = Decimal("0")
+
+    if is_taux_plein:
+        taux = TAUX_PLEIN
+        if retirement_age > AGE_TAUX_PLEIN_AUTO and total_trimestres > trimestres_requis:
+            extra = total_trimestres - trimestres_requis
+            surcote = min(Decimal(str(extra)), Decimal("20")) * SURCOTE_PER_TRIMESTRE
+            taux = min(TAUX_PLEIN + surcote, Decimal("0.625"))
+    else:
+        missing = min(missing_trimestres, MAX_DECOTE_TRIMESTRES)
+        quarters_to_67 = (AGE_TAUX_PLEIN_AUTO - retirement_age) * MAX_TRIMESTRES_PER_YEAR
+        missing = min(missing, max(0, quarters_to_67))
+        taux = TAUX_PLEIN - (Decimal(str(missing)) * DECOTE_PER_TRIMESTRE)
+        taux = max(taux, Decimal("0.375"))
+        decote_pct = Decimal(str(min(missing, MAX_DECOTE_TRIMESTRES))) * DECOTE_PER_TRIMESTRE * Decimal("100")
+
+    # ── Base pension ─────────────────────────────────────────────────
+    # Prorata: trimestres validés / trimestres requis
+    prorata = min(Decimal("1"),
+                  Decimal(str(total_trimestres)) / Decimal(str(trimestres_requis)))
+
+    base_annual = sam * taux * prorata
+    base_monthly = base_annual / Decimal("12")
+
+    # ── AGIRC-ARRCO complémentaire (regime général) ──────────────────
+    agirc_points = Decimal("0")
+    for yr, salary in all_salaries.items():
+        year_index = yr - min(all_salaries.keys()) if all_salaries else 0
+        pass_val = _inflate_threshold(PASS, max(0, year_index), inflation_rate)
+        capped = min(salary, pass_val)
+        points_this_year = (capped * AGIRC_COTISATION_RATE) / AGIRC_POINT_PRICE
+        agirc_points += points_this_year
+
+    complementaire_salarie_monthly = (agirc_points * AGIRC_POINT_VALUE) / Decimal("12")
+
+    # ── RCI complémentaire (AE side) ──────────────────────────────────
+    rci_points = Decimal("0")
+    for yr, ca in all_ae_ca.items():
+        points_this_year = (ca / Decimal("1000")) * RCI_POINTS_PER_1000_CA
+        rci_points += points_this_year
+    complementaire_ae_monthly = (rci_points * RCI_POINT_VALUE) / Decimal("12")
+
+    complementaire_monthly = complementaire_salarie_monthly + complementaire_ae_monthly
+    total_monthly = base_monthly + complementaire_monthly
+
+    # Determine confidence
+    has_salaried = len(all_salaries) > 0
+    confidence = "medium" if has_salaried else "low"
+
+    return {
+        "base_salarie_monthly": base_monthly,
+        "base_ae_monthly": Decimal("0"),  # Base is unified now
+        "complementaire_salarie_monthly": complementaire_salarie_monthly,
+        "complementaire_ae_monthly": complementaire_ae_monthly,
+        "complementaire_monthly": complementaire_monthly,
+        "total_monthly": total_monthly,
+        "trimestres": {
+            "salarie": trimestres_salarie,
+            "ae_past_projected": trimestres_ae_total,
+            "other": trimestres_other,
+            "total": total_trimestres,
+            "required": trimestres_requis,
+            "missing": missing_trimestres,
+        },
+        "sam": sam,
+        "taux": taux,
+        "decote_pct": decote_pct,
+        "is_taux_plein": is_taux_plein,
+        "confidence": confidence,
+        "note": (
+            "Estimation indicative basée sur votre parcours déclaré. "
+            "Le calcul définitif relève de l'Assurance Retraite. "
+            "Consultez info-retraite.fr pour un relevé de carrière officiel."
+        ),
     }

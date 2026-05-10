@@ -76,6 +76,38 @@ def _cost_event_from_dict(data: dict) -> CostEvent:
     )
 
 
+def _detect_expired(current_age: int, cost_events: list[dict]) -> tuple[bool, str | None]:
+    """Detect whether all cost events are in the past for this entity.
+
+    An entity is expired when its current_age exceeds the maximum to_age
+    across all active cost events — meaning all events have already ended
+    and the entity contributes zero to the projection.
+
+    Args:
+        current_age: The entity's computed current age.
+        cost_events: List of cost event dicts from JSONB.
+
+    Returns:
+        Tuple of (expired: bool, expired_message: str | None).
+    """
+    if not cost_events:
+        return False, None
+
+    active_events = [e for e in cost_events if e.get("is_active", True)]
+    if not active_events:
+        return True, "Tous les événements de coût sont désactivés. Cette entité ne contribue pas à la projection."
+
+    max_to_age = max(e.get("to_age", 0) for e in active_events)
+
+    if current_age > max_to_age:
+        return True, (
+            f"Tous les coûts prévus sont terminés (dernier à l'âge {max_to_age}). "
+            f"Ce véhicule ne contribue pas à la projection."
+        )
+
+    return False, None
+
+
 def _entity_to_read(entity: LifeEntity) -> LifeEntityRead:
     """Convert a LifeEntity ORM object to a LifeEntityRead response."""
     current_age = _compute_age(entity.reference_date)
@@ -83,6 +115,8 @@ def _entity_to_read(entity: LifeEntity) -> LifeEntityRead:
         _cost_event_from_dict(e)
         for e in (entity.cost_events or [])
     ]
+    raw_cost_events = entity.cost_events or []
+    expired, expired_message = _detect_expired(current_age, raw_cost_events)
     return LifeEntityRead(
         id=entity.id,
         user_id=entity.user_id,
@@ -90,6 +124,8 @@ def _entity_to_read(entity: LifeEntity) -> LifeEntityRead:
         name=entity.name,
         reference_date=entity.reference_date,
         current_age=current_age,
+        expired=expired,
+        expired_message=expired_message,
         metadata=entity.metadata_ or {},
         cost_events=cost_events,
         is_active=entity.is_active,
