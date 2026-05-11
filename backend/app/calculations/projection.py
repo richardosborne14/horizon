@@ -28,6 +28,7 @@ from typing import Any
 from app.calculations.ae_rates import get_ae_rate, get_cfe_estimate
 from app.calculations.caf import estimate_monthly_caf
 from app.calculations.constants import INFLATION_SCALES
+from app.calculations.income_tax import compute_ir
 from app.calculations.vehicles import VEHICLE_SPECS, VEHICLE_ORDER
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,35 @@ class ProjectionInput:
     # Goal
     monthly_revenue_goal: Decimal | None = None
 
+    # Income Tax (TASK-7.12)
+    tax_parts: Decimal = Decimal("1")  # Quotient familial parts (1=seul, 2=couple, +0.5/enfant)
+    versement_liberatoire: bool = False
+    spouse_annual_income: Decimal = Decimal("0")  # Spouse salary (CDI/CDD)
+    other_annual_income: Decimal = Decimal("0")  # Dividends, rental, etc.
+
+    # ── Spouse (TASK-7.8) ──────────────────────────────────────────────
+    spouse_monthly_gross: Decimal = Decimal("0")
+    spouse_growth_rate: Decimal = Decimal("0.03")
+    spouse_ae_type: str | None = None  # None = salaried (no AE cotisations)
+    spouse_pension_monthly: Decimal = Decimal("0")
+    spouse_retirement_age: int | None = None  # None = same as user
+
+    # ── CC (conjointe collaboratrice) ──────────────────────────────────
+    cc_annual_cotisation: Decimal = Decimal("0")
+
+    # ── Income sources (replaces flat CA growth) ───────────────────────
+    income_sources: list[dict] | None = None
+    # Each: {earner, label, amount, frequency, start_date, end_date,
+    #        annual_growth_rate, is_ae_revenue}
+    # If None → use monthly_gross with growth_rate (backward compat)
+
+    # ── Property (TASK-7.16) ────────────────────────────────────────────
+    property_value: Decimal = Decimal("0")           # Current estimated value
+    property_appreciation_rate: Decimal = Decimal("0.02")  # Annual appreciation
+    downsize_enabled: bool = False                   # Enable downsizing simulation
+    downsize_year: int | None = None                  # Year of downsizing
+    downsize_target_value: Decimal = Decimal("0")     # Value of replacement property
+
 
 @dataclass
 class YearProjection:
@@ -161,10 +191,19 @@ class YearProjection:
     year_returns: Decimal = Decimal("0")
     total_wealth: Decimal = Decimal("0")  # sum of all vehicle balances
 
+    # Income Tax (TASK-7.12)
+    ir_annual: Decimal = Decimal("0")  # Impôt sur le revenu for this year
+    ir_monthly: Decimal = Decimal("0")  # IR / 12
+    taux_effectif_ir: Decimal = Decimal("0")  # Effective tax rate this year
+
     # Derived
     passive_monthly: Decimal = Decimal("0")  # total_wealth × 4% / 12
     total_monthly_income: Decimal = Decimal("0")  # (gross + project_income + caf + pension) / 12 + passive
     goal_reached: bool = False
+
+    # ── Property (TASK-7.16) ────────────────────────────────────────────
+    property_value: Decimal = Decimal("0")      # Current property value this year
+    downsize_freed: Decimal = Decimal("0")      # Freed capital (non-zero only in downsize year)
 
 
 # ├─────────────────────────────────────────────────────────────────────────────
@@ -276,13 +315,72 @@ def _compute_accumulation_year(
     infl = (Decimal("1") + infl_rate) ** y
     cost_factor = (Decimal("1") + cost_living_rate) ** y
 
-    # ── Revenue ──────────────────────────────────────────────────────
-    gross = inp.monthly_gross * Decimal("12") * (
-        (Decimal("1") + inp.growth_rate) ** y
-    )
+    # ── Revenue (TASK-7.8: income sources or flat CA) ────────────────
+    onetime = Decimal("0")
+    spouse_income = Decimal("0")
+    spouse_charges = Decimal("0")
+
+    if inp.income_sources:
+        user_ae_income = compute_income_for_year(
+            inp.income_sources, year, "user", ae_only=True,
+            current_year=inp.current_year,
+        )
+        user_non_ae_income = (
+            compute_income_for_year(
+                inp.income_sources, year, "user", ae_only=False,
+                current_year=inp.current_year,
+            )
+            - user_ae_income
+        )
+        spouse_income = compute_income_for_year(
+            inp.income_sources, year, "spouse",
+            current_year=inp.current_year,
+        )
+        onetime = compute_onetime_income_for_year(
+            inp.income_sources, year,
+        )
+        gross = user_ae_income  # AE cotisations apply to this
+    else:
+        # Backward compat: flat CA with growth
+        gross = inp.monthly_gross * Decimal("12") * (
+            (Decimal("1") + inp.growth_rate) ** y
+        )
+        user_non_ae_income = Decimal("0")
+        # Spouse income handled below in spouse block
+        spouse_income = Decimal("0")
+        onetime = Decimal("0")
+
     ae_rate = get_ae_rate(inp.ae_activity_type, year)
     charges = gross * ae_rate
     cfe = get_cfe_estimate(year, infl_rate)
+
+    # ── Spouse income and cotisations (TASK-7.8) ─────────────────────
+    spouse_ret_age = inp.spouse_retirement_age or inp.target_age
+    spouse_age = inp.current_age + y
+    spouse_retired = spouse_age >= spouse_ret_age
+
+    if not inp.income_sources:
+        # Backward compat: determine spouse income from flat fields
+        if spouse_retired:
+            spouse_income = inp.spouse_pension_monthly * Decimal("12")
+        elif inp.spouse_monthly_gross > 0:
+            spouse_income = inp.spouse_monthly_gross * Decimal("12") * (
+                (Decimal("1") + inp.spouse_growth_rate) ** y
+            )
+    else:
+        # Income sources: spouse_income already computed above
+        if spouse_retired:
+            spouse_income = inp.spouse_pension_monthly * Decimal("12")
+            spouse_charges = Decimal("0")
+
+    # Compute spouse cotisations if working
+    if not spouse_retired and spouse_income > 0:
+        spouse_charges = _compute_spouse_charges(inp, spouse_income, year)
+
+    # ── CC cotisation as expense (TASK-7.8) ──────────────────────────
+    cc_expense = Decimal("0")
+    if inp.cc_annual_cotisation > 0 and not spouse_retired:
+        cc_expense = inp.cc_annual_cotisation
 
     # ── Status change ────────────────────────────────────────────────
     status_bonus = Decimal("0")
@@ -309,15 +407,39 @@ def _compute_accumulation_year(
     proj_exp, proj_inc = _compute_project_cashflow(inp, year, infl)
 
     # ── CAF / Tax credits ────────────────────────────────────────────
-    caf = _compute_caf(inp, y, gross, year)
+    caf = _compute_caf(inp, y, gross + user_non_ae_income + spouse_income, year)
     tax_credits = _compute_tax_credits(inp, infl)
     pension = Decimal("0")  # no pension during working years
 
+    # ── Income Tax (IR) ──────────────────────────────────────────────
+    ir_result = compute_ir(
+        ae_ca_annual=gross,
+        ae_activity_type=inp.ae_activity_type,
+        salary_annual=spouse_income if not inp.spouse_ae_type else inp.spouse_annual_income,
+        other_income_annual=inp.other_annual_income + user_non_ae_income,
+        tax_parts=inp.tax_parts,
+        cesu_credit=min(
+            inp.cesu_annual * infl * Decimal("0.5"), Decimal("6000")
+        ),
+        charity_reduction=min(
+            inp.charity_annual * infl * Decimal("0.66"), Decimal("20000")
+        ),
+        has_vl=inp.versement_liberatoire,
+    )
+    ir_annual = Decimal(ir_result["ir_net"])
+    ir_monthly = Decimal(ir_result["monthly_ir"])
+    taux_effectif = Decimal(ir_result["taux_effectif"])
+
     # ── Net ──────────────────────────────────────────────────────────
-    total_income = gross + proj_inc + caf + tax_credits
+    total_income = (
+        gross + user_non_ae_income + spouse_income
+        + onetime + proj_inc + caf + tax_credits
+    )
     total_outgoing = (
-        charges + cfe + base_exp + kid_exp + pet_exp
+        charges + spouse_charges + cc_expense + cfe
+        + base_exp + kid_exp + pet_exp
         + car_exp + tech_exp + rec_exp + proj_exp + loan_exp
+        + ir_annual
     )
     net = total_income - total_outgoing + status_bonus
 
@@ -325,6 +447,56 @@ def _compute_accumulation_year(
     year_invested, year_returns = _compute_investment_growth(
         inp, balances, infl_rate, infl, y=y
     )
+
+    # ── Surplus reinvestment ────────────────────────────────────────
+    # Any positive net (income - expenses - charges) that isn't already
+    # structured as a monthly allocation gets reinvested at 50% into the
+    # highest-yield available vehicle. Without this, changes to growth_rate
+    # or expenses produce zero delta in sensitivity analysis because the
+    # extra cash never reaches investments.
+    surplus_for_investment = max(Decimal("0"), net) * Decimal("0.5")
+    if surplus_for_investment > 0 and inp.allocations:
+        # Find the highest-rate existing vehicle to receive surplus
+        best_vk = max(
+            inp.allocations.keys(),
+            key=lambda k: VEHICLE_SPECS.get(k, {}).get("rate", Decimal("0")),
+        )
+        balances[best_vk] = balances.get(best_vk, Decimal("0")) + surplus_for_investment
+        year_invested += surplus_for_investment
+
+    # ── Property appreciation and downsizing (TASK-7.16) ────────────
+    current_property = Decimal("0")
+    downsize_freed = Decimal("0")
+
+    if inp.property_value > 0:
+        from app.calculations.property import project_property_value, compute_downsize_capital
+
+        years_from_start = y
+        current_property = project_property_value(
+            inp.property_value, inp.property_appreciation_rate, years_from_start,
+        )
+
+        # Downsizing event
+        if (
+            inp.downsize_enabled
+            and inp.downsize_year is not None
+            and year == inp.downsize_year
+        ):
+            freed_capital = compute_downsize_capital(
+                current_property, inp.downsize_target_value,
+            )
+            if freed_capital > 0:
+                # Add freed capital to investments (distribute to AV or PEA)
+                if "av_euro" in balances:
+                    balances["av_euro"] += freed_capital
+                elif "pea" in balances:
+                    balances["pea"] += freed_capital
+                else:
+                    balances["av_euro"] = freed_capital
+                downsize_freed = freed_capital
+
+            # Update property value to replacement
+            current_property = inp.downsize_target_value
 
     wealth = sum(balances.values(), Decimal("0"))
     passive = wealth * Decimal("0.04") / Decimal("12")
@@ -360,6 +532,9 @@ def _compute_accumulation_year(
         total_income=total_income.quantize(Decimal("0.01")),
         total_outgoing=total_outgoing.quantize(Decimal("0.01")),
         net_annual=net.quantize(Decimal("0.01")),
+        ir_annual=ir_annual.quantize(Decimal("0.01")),
+        ir_monthly=ir_monthly.quantize(Decimal("0.01")),
+        taux_effectif_ir=taux_effectif.quantize(Decimal("0.0001")),
         year_invested=year_invested.quantize(Decimal("0.01")),
         year_returns=year_returns.quantize(Decimal("0.01")),
         total_wealth=wealth.quantize(Decimal("0.01")),
@@ -370,6 +545,8 @@ def _compute_accumulation_year(
             and inp.monthly_revenue_goal > 0
             and retirement_monthly_income >= inp.monthly_revenue_goal
         ),
+        property_value=current_property.quantize(Decimal("0.01")),
+        downsize_freed=downsize_freed.quantize(Decimal("0.01")),
     )
 
 
@@ -402,9 +579,11 @@ def _compute_retirement_year(
     cfe = Decimal("0")
     status_bonus = Decimal("0")
 
-    # ── Pension income ───────────────────────────────────────────────
+    # ── Pension income (TASK-7.8: household = user + spouse) ─────────
     pension_monthly = inp.pension_monthly
-    pension_annual = pension_monthly * Decimal("12")
+    spouse_pension_monthly = inp.spouse_pension_monthly
+    household_pension_monthly = pension_monthly + spouse_pension_monthly
+    pension_annual = household_pension_monthly * Decimal("12")
 
     # ── Expenses (same structure as accumulation, minus work-related) ─
     base_exp, kid_exp, pet_exp, car_exp, tech_exp = _compute_life_entity_expenses(
@@ -447,22 +626,82 @@ def _compute_retirement_year(
         balances[vk] = bal + net_ret  # no contributions, only returns
         year_returns += net_ret
 
-    wealth_before_withdrawal = sum(balances.values(), Decimal("0"))
-
-    # ── Withdrawal to cover shortfall ────────────────────────────────
-    shortfall = total_outgoing - total_income
+    # ── Tax-optimized drawdown (TASK-7.13) ───────────────────────────
+    # Replaces both the 4% rule AND the simple shortfall withdrawal.
+    # Draws from PEA → AV → SCPI → PER with tax optimization
+    # and maintains a 6-month liquidity buffer in Livret A/LDDS.
+    monthly_exp = total_outgoing / Decimal("12")
     withdrawal = Decimal("0")
+    wealth = sum(balances.values(), Decimal("0"))
 
-    if shortfall > 0:
-        # Draw from savings — bucket priority: liquid first
-        withdrawal = _withdraw_from_savings(balances, shortfall)
+    try:
+        from app.calculations.drawdown import compute_drawdown_for_year
+
+        drawdown = compute_drawdown_for_year(
+            balances=balances,
+            monthly_need=inp.monthly_revenue_goal or monthly_exp,
+            monthly_expenses=monthly_exp,
+            tax_parts=inp.tax_parts,
+            is_couple=(inp.spouse_monthly_gross > Decimal("0")),
+        )
+        # Replace balances with drawdown's remaining_balances
+        for vehicle, new_bal_str in drawdown["remaining_balances"].items():
+            balances[vehicle] = Decimal(new_bal_str)
+        passive = Decimal(drawdown["net_income_monthly"])
+        withdrawal = (
+            Decimal(drawdown["total_withdrawn"])
+            - Decimal(drawdown["total_tax"])
+        )
+    except Exception:
+        # Fallback to simple withdrawal + 4% rule
+        shortfall = total_outgoing - total_income
+        if shortfall > 0:
+            withdrawal = _withdraw_from_savings(balances, shortfall)
+        passive = max(Decimal("0"), wealth * Decimal("0.04") / Decimal("12"))
 
     # Total net for the year
     net = total_income - total_outgoing + withdrawal  # withdrawal fills the gap
 
-    wealth = sum(balances.values(), Decimal("0"))
-    passive = max(Decimal("0"), wealth * Decimal("0.04") / Decimal("12"))
     total_monthly = (proj_inc + pension_annual) / Decimal("12") + passive
+
+    # ── Property appreciation and downsizing (TASK-7.16) ────────────
+    # Continue property appreciation through retirement. Downsizing
+    # can also happen during retirement years.
+    current_property = Decimal("0")
+    downsize_freed = Decimal("0")
+
+    if inp.property_value > 0:
+        from app.calculations.property import project_property_value, compute_downsize_capital
+
+        years_from_start = y
+        current_property = project_property_value(
+            inp.property_value, inp.property_appreciation_rate, years_from_start,
+        )
+
+        # Downsizing event (can happen in retirement)
+        if (
+            inp.downsize_enabled
+            and inp.downsize_year is not None
+            and year == inp.downsize_year
+        ):
+            freed_capital = compute_downsize_capital(
+                current_property, inp.downsize_target_value,
+            )
+            if freed_capital > 0:
+                # Add freed capital to investments
+                if "av_euro" in balances:
+                    balances["av_euro"] += freed_capital
+                elif "pea" in balances:
+                    balances["pea"] += freed_capital
+                else:
+                    balances["av_euro"] = freed_capital
+                downsize_freed = freed_capital
+
+            # Update property value to replacement
+            current_property = inp.downsize_target_value
+
+    # Recompute wealth after potential downsize injection
+    wealth = sum(balances.values(), Decimal("0"))
 
     return YearProjection(
         year=year,
@@ -496,6 +735,8 @@ def _compute_retirement_year(
         passive_monthly=passive.quantize(Decimal("0.01")),
         total_monthly_income=total_monthly.quantize(Decimal("0.01")),
         goal_reached=False,
+        property_value=current_property.quantize(Decimal("0.01")),
+        downsize_freed=downsize_freed.quantize(Decimal("0.01")),
     )
 
 
@@ -767,12 +1008,14 @@ def _compute_investment_growth(
 
     for vk, alloc in inp.allocations.items():
         monthly = alloc.get("monthly", Decimal("0"))
-        if monthly <= 0:
-            continue
         spec = VEHICLE_SPECS.get(vk)
         if not spec:
             continue
         bal = balances.get(vk, Decimal("0"))
+        if monthly <= 0 and bal <= 0:
+            # Skip vehicles with no money at all — no contributions and no
+            # existing balance to compound.
+            continue
         has_existing = bal > Decimal("0")  # non-zero starting balance
         contrib = monthly * Decimal("12")
 
@@ -937,8 +1180,8 @@ def compute_summary(
     Returns:
         Dict with keys:
           - years: total projected years
-          - final_wealth: total wealth at last year
-          - final_passive_monthly: passive income at last year
+          - final_wealth: total wealth at retirement start (peak, before drawdown)
+          - final_passive_monthly: passive income at retirement start
           - total_invested: sum of all contributions
           - total_returns: sum of all investment returns
           - goal_year: {"year", "age"} or None
@@ -961,9 +1204,14 @@ def compute_summary(
             "retirement_monthly_gap": "0.00",
         }
 
-    last = timeline[-1]
     total_invested = sum((t.year_invested for t in timeline), Decimal("0"))
     total_returns = sum((t.year_returns for t in timeline), Decimal("0"))
+
+    # Use retirement-start wealth (peak) rather than final-year wealth
+    # because the drawdown phase may exhaust all savings.
+    # The last accumulation year holds peak pre-retirement wealth.
+    accumulation_only = [t for t in timeline if not t.is_retirement]
+    peak = accumulation_only[-1] if accumulation_only else timeline[-1]
 
     # Find first retirement year for income/gap stats
     retirement_entries = [t for t in timeline if t.is_retirement]
@@ -983,8 +1231,8 @@ def compute_summary(
 
     return {
         "years": len(timeline),
-        "final_wealth": str(last.total_wealth),
-        "final_passive_monthly": str(last.passive_monthly),
+        "final_wealth": str(peak.total_wealth),
+        "final_passive_monthly": str(peak.passive_monthly),
         "total_invested": str(total_invested.quantize(Decimal("0.01"))),
         "total_returns": str(total_returns.quantize(Decimal("0.01"))),
         "goal_year": find_goal_year(timeline),
@@ -1026,3 +1274,112 @@ def _count_kids_under(
         if age < max_age:
             count += 1
     return count
+
+
+# ├─────────────────────────────────────────────────────────────────────────────
+# │ Income source helpers (TASK-7.8)
+# ├─────────────────────────────────────────────────────────────────────────────
+
+
+def compute_income_for_year(
+    sources: list[dict],
+    year: int,
+    earner: str,
+    ae_only: bool = False,
+    current_year: int = 2026,
+) -> Decimal:
+    """Sum active income sources for a given year and earner.
+
+    Args:
+        sources: List of income source dicts with keys:
+            earner, label, amount, frequency, start_date, end_date,
+            annual_growth_rate, is_ae_revenue.
+        year: The projection year.
+        earner: "user" or "spouse".
+        ae_only: If True, only include is_ae_revenue=True sources.
+        current_year: The current year (for growth indexing).
+
+    Returns:
+        Annual income from matching sources.
+    """
+    total = Decimal("0")
+    for src in sources:
+        if src.get("earner") != earner:
+            continue
+        if ae_only and not src.get("is_ae_revenue", True):
+            continue
+
+        # Check if source is active this year
+        start_date_str = src.get("start_date")
+        end_date_str = src.get("end_date")
+        start_year = int(start_date_str[:4]) if start_date_str else 0
+        end_year = int(end_date_str[:4]) if end_date_str else 9999
+        if year < start_year or year > end_year:
+            continue
+
+        # Skip one-time sources (handled separately)
+        if src.get("frequency") == "one_time":
+            continue
+
+        amount = Decimal(str(src.get("amount", "0")))
+        # Apply growth from source start
+        growth = Decimal(str(src.get("annual_growth_rate") or "0"))
+        years_active = max(0, year - max(start_year, current_year))
+        grown = amount * ((Decimal("1") + growth) ** years_active)
+
+        if src.get("frequency") == "monthly":
+            total += grown * Decimal("12")
+        elif src.get("frequency") == "annual":
+            total += grown
+
+    return total
+
+
+def compute_onetime_income_for_year(
+    sources: list[dict],
+    year: int,
+) -> Decimal:
+    """Sum one-time income events occurring in a given year.
+
+    Args:
+        sources: List of income source dicts (same shape as compute_income_for_year).
+        year: The projection year.
+
+    Returns:
+        Sum of one-time income amounts for this year.
+    """
+    total = Decimal("0")
+    for src in sources:
+        if src.get("frequency") != "one_time":
+            continue
+        start_date_str = src.get("start_date")
+        if start_date_str and int(start_date_str[:4]) == year:
+            total += Decimal(str(src.get("amount", "0")))
+    return total
+
+
+def _compute_spouse_charges(
+    inp: ProjectionInput,
+    spouse_annual: Decimal,
+    year: int,
+) -> Decimal:
+    """Compute social charges for spouse income.
+
+    If spouse is AE (spouse_ae_type is set), use AE rates.
+    Otherwise, use simplified salaried rate (23%).
+
+    Args:
+        inp: Projection input.
+        spouse_annual: Spouse annual income.
+        year: The projection year.
+
+    Returns:
+        Social charges amount.
+    """
+    if inp.spouse_ae_type and spouse_annual > 0:
+        ae_rate = get_ae_rate(inp.spouse_ae_type, year)
+        return spouse_annual * ae_rate
+    elif spouse_annual > 0:
+        # Simplified salaried rate: ~23% (salarial + patronal)
+        return spouse_annual * Decimal("0.23")
+    return Decimal("0")

@@ -36,6 +36,14 @@ class NetWorthCreate(BaseModel):
     property_other_value: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=12, decimal_places=2
     )
+    property_appreciation_rate: Decimal = Field(
+        default=Decimal("0.02"), ge=0, le=1, max_digits=5, decimal_places=4
+    )
+    downsize_enabled: bool = False
+    downsize_year: int | None = None
+    downsize_target_value: Decimal | None = Field(
+        default=None, ge=0, max_digits=12, decimal_places=2
+    )
     business_value: Decimal = Field(
         default=Decimal("0"), ge=0, max_digits=12, decimal_places=2
     )
@@ -69,6 +77,10 @@ class NetWorthRead(BaseModel):
     # Property
     property_primary_value: Decimal
     property_other_value: Decimal
+    property_appreciation_rate: Decimal = Decimal("0.02")
+    downsize_enabled: bool = False
+    downsize_year: int | None = None
+    downsize_target_value: Decimal | None = None
 
     # Other assets
     business_value: Decimal

@@ -1,9 +1,11 @@
 """
-Pydantic schemas for CareerPeriod — TASK-6.1.
+Pydantic schemas for CareerPeriod — TASK-6.1 / TASK-7.7.
 
-Career periods represent distinct phases of the user's professional life.
+Career periods represent distinct phases of the user's or spouse's professional life.
 Each period feeds into the pension engine (TASK-6.2) for trimestre and
 SAM (Salaire Annuel Moyen) calculation.
+
+TASK-7.7: Added `owner` field to distinguish user vs spouse career periods.
 """
 
 from datetime import date, datetime
@@ -54,11 +56,14 @@ class CareerPeriodCreate(BaseModel):
 
     start_date and end_date represent the full period inclusive on both ends.
     end_date=None means ongoing (current period).
+    
+    owner defaults to "user". Use "spouse" for spouse career periods.
     """
 
     period_type: PeriodType
     start_date: date
     end_date: Optional[date] = None
+    owner: str = Field(default="user", pattern="^(user|spouse)$")
     employer_name: Optional[str] = Field(default=None, max_length=200)
     job_title: Optional[str] = Field(default=None, max_length=200)
     annual_gross: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
@@ -75,6 +80,7 @@ class CareerPeriodUpdate(BaseModel):
     period_type: Optional[PeriodType] = None
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    owner: Optional[str] = Field(default=None, pattern="^(user|spouse)$")
     employer_name: Optional[str] = Field(default=None, max_length=200)
     job_title: Optional[str] = Field(default=None, max_length=200)
     annual_gross: Optional[Decimal] = Field(default=None, ge=0, max_digits=12, decimal_places=2)
@@ -98,6 +104,7 @@ class CareerPeriodRead(BaseModel):
 
     id: UUID
     user_id: UUID
+    owner: str = "user"
     period_type: str
     start_date: date
     end_date: Optional[date] = None

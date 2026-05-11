@@ -17,6 +17,7 @@ Design principles:
 from __future__ import annotations
 
 import copy
+import logging
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
@@ -26,6 +27,8 @@ from app.calculations.projection import (
     project_timeline,
     compute_summary,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -72,6 +75,22 @@ NUDGES: dict[str, dict[str, Any]] = {
         "base_value_formatter": lambda inp: "Prêts ignorés après échéance",
         "test_value_formatter": lambda inp, nudge: "Prêts redirigés vers épargne après échéance",
         "nudge_amount": True,
+    },
+    "spouse_income_increase": {
+        "label": "Conjoint(e) gagne 500€/mois de plus",
+        "description": "Le revenu brut mensuel du conjoint augmente de 500€",
+        "base_value_formatter": lambda inp: (
+            f"Revenu conjoint: {inp.spouse_monthly_gross:.0f}€/mois"
+            if inp.spouse_monthly_gross > Decimal("0")
+            else "Pas de conjoint"
+        ),
+        "test_value_formatter": lambda inp, nudge: (
+            f"Revenu conjoint: {(inp.spouse_monthly_gross + nudge):.0f}€/mois (+500€)"
+            if inp.spouse_monthly_gross > Decimal("0")
+            else "Non applicable"
+        ),
+        "nudge_amount": Decimal("500"),
+        "requires_spouse": True,  # Only include if spouse exists
     },
 }
 
@@ -176,6 +195,10 @@ def _apply_nudge(inp: ProjectionInput, param: str) -> ProjectionInput:
         # Mark loans for redirection after termination
         _enable_loan_freed_redirection(modified)
 
+    elif param == "spouse_income_increase":
+        # Increase spouse monthly gross by 500€
+        modified.spouse_monthly_gross += nudge
+
     return modified
 
 
@@ -188,9 +211,24 @@ def _total_monthly_savings(inp: ProjectionInput) -> Decimal:
 
 
 def _add_to_savings(inp: ProjectionInput, amount: Decimal) -> None:
-    """Add an amount to total savings, distributed proportionally across allocations."""
+    """Add an amount to total savings, distributed proportionally across allocations.
+
+    If the user has no savings allocations yet (total == 0), create a default
+    allocation in the first available vehicle so the nudge has a real impact.
+    """
     total = _total_monthly_savings(inp)
     if total == Decimal("0"):
+        # No allocations yet — seed a default vehicle with the full amount
+        # Use the first key present, or create a synthetic "livret_a" entry
+        if not inp.allocations:
+            inp.allocations["livret_a"] = {
+                "balance": Decimal("0"),
+                "monthly": amount,
+            }
+        else:
+            # Pick the first existing key
+            first_key = next(iter(inp.allocations))
+            inp.allocations[first_key]["monthly"] = amount
         return
     for key in inp.allocations:
         current = inp.allocations[key].get("monthly", Decimal("0"))
@@ -209,7 +247,14 @@ def _add_to_savings(inp: ProjectionInput, amount: Decimal) -> None:
 
 
 def _redirect_to_pea(inp: ProjectionInput, fraction: Decimal) -> None:
-    """Redirect a fraction of total monthly savings to PEA vehicles."""
+    """Redirect a fraction of total monthly savings to PEA vehicles.
+
+    If the user has no savings allocations yet (total == 0), this nudge
+    would have no effect since there's nothing to redirect. Skip silently
+    rather than creating an artificial allocation — redirecting zero to PEA
+    changes nothing. The _add_to_savings nudge already handles zero-total
+    seeding, and that's the one users would try first.
+    """
     total = _total_monthly_savings(inp)
     if total == Decimal("0"):
         return
@@ -319,6 +364,9 @@ def run_sensitivity_analysis(
     results: list[SensitivityResult] = []
 
     for param, config in NUDGES.items():
+        # Skip spouse nudge if no spouse exists
+        if config.get("requires_spouse") and inp.spouse_monthly_gross <= Decimal("0"):
+            continue
         try:
             modified_inp = _apply_nudge(inp, param)
             test_timeline = project_timeline(modified_inp)
@@ -358,9 +406,15 @@ def run_sensitivity_analysis(
                     rank=0,
                 )
             )
-        except Exception:
+        except Exception as exc:
             # If a nudge produces an invalid input (e.g., retirement_age < current_age),
-            # skip it rather than failing the entire analysis.
+            # skip it rather than failing the entire analysis. Log the error so
+            # silent failures don't produce zero-filled results without traceability.
+            logger.warning(
+                "Sensitivity nudge %r failed for user, skipping: %s",
+                param,
+                exc,
+            )
             continue
 
     # Rank by absolute delta_wealth descending

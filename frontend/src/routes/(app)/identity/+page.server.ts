@@ -1,9 +1,7 @@
 /**
- * Identity page server loader — loads profile and AE rate schedule.
+ * Identity page server loader — loads profile, spouse, career, and AE rate schedule.
  *
- * Runs on the server before rendering the Identity page.
- * Fetches the authenticated user's profile (auto-creates if new)
- * and the AE rate schedule for their current activity type.
+ * Sprint 7 (TASK-7.9): Added spouse, CC estimate, and spouse career loading.
  */
 import type { PageServerLoad } from './$types';
 import { env } from '$env/dynamic/private';
@@ -21,16 +19,46 @@ async function fetchWithAuth(cookies: any, fetchFn: typeof fetch, path: string):
 }
 
 export const load: PageServerLoad = async ({ cookies, fetch }) => {
-	const sessionToken = cookies.get(SESSION_COOKIE);
-
-	// Fetch profile (auto-creates on first access)
-	const [profileJson, careerJson, careerSummary] = await Promise.all([
+	// Fetch profile, user career, user career summary, spouse, net worth
+	const [profileJson, careerJson, careerSummary, spouseJson, netWorthJson] = await Promise.all([
 		fetchWithAuth(cookies, fetch, '/api/profile'),
-		fetchWithAuth(cookies, fetch, '/api/career'),
-		fetchWithAuth(cookies, fetch, '/api/career/summary'),
+		fetchWithAuth(cookies, fetch, '/api/career?owner=user'),
+		fetchWithAuth(cookies, fetch, '/api/career/summary?owner=user'),
+		fetchWithAuth(cookies, fetch, '/api/spouse'),
+		fetchWithAuth(cookies, fetch, '/api/net-worth'),
 	]);
 
 	const profile = profileJson;
+	const spouse = spouseJson;
+
+	// Fetch spouse career if spouse exists
+	let spouseCareer: any[] = [];
+	let spouseCareerSummary: any = null;
+	let ccEstimate: any = null;
+
+	if (spouse) {
+		const [spCareerJson, spCareerSummaryJson] = await Promise.all([
+			fetchWithAuth(cookies, fetch, '/api/career?owner=spouse'),
+			fetchWithAuth(cookies, fetch, '/api/career/summary?owner=spouse'),
+		]);
+		spouseCareer = Array.isArray(spCareerJson) ? spCareerJson : [];
+		spouseCareerSummary = spCareerSummaryJson;
+
+		// Fetch CC estimate if spouse is CC
+		if (spouse.is_conjointe_collaboratrice) {
+			const ccRes = await fetch(
+				`${BACKEND_URL}/api/spouse/cc-estimate`,
+				{
+					headers: {
+						Cookie: `${SESSION_COOKIE}=${cookies.get(SESSION_COOKIE)}`,
+					},
+				}
+			);
+			if (ccRes.ok) {
+				ccEstimate = await ccRes.json();
+			}
+		}
+	}
 
 	// Fetch AE rate schedule for the user's current activity type
 	const aeType = profile?.ae_activity_type ?? 'bnc_non_reglementee';
@@ -57,5 +85,10 @@ export const load: PageServerLoad = async ({ cookies, fetch }) => {
 		allSchedules,
 		careerPeriods: Array.isArray(careerJson) ? careerJson : [],
 		careerSummary: careerSummary ?? null,
+		spouse,
+		spouseCareer,
+		spouseCareerSummary,
+		ccEstimate,
+		netWorth: netWorthJson,
 	};
 };

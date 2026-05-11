@@ -1,16 +1,19 @@
 """
-Career History router — CRUD for career periods (TASK-6.1).
+Career History router — CRUD for career periods (TASK-6.1 / TASK-7.7).
 
 All endpoints require authentication and are scoped to the current user.
-Each period represents a distinct phase of the user's professional life.
+Each period represents a distinct phase of the user's or spouse's professional life.
 Periods are ordered by start_date.
+
+TASK-7.7: Added `owner` query parameter to list and summary endpoints
+to distinguish user vs spouse career history.
 """
 
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,6 +79,7 @@ def _period_to_read(
     return CareerPeriodRead(
         id=period.id,
         user_id=period.user_id,
+        owner=period.owner,
         period_type=period.period_type,
         start_date=period.start_date,
         end_date=period.end_date,
@@ -102,6 +106,7 @@ def _period_to_read(
 
 @router.get("", response_model=list[CareerPeriodRead])
 async def list_career_periods(
+    owner: str = Query(default="user", regex="^(user|spouse)$"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -109,24 +114,23 @@ async def list_career_periods(
 
     Ordered by start_date ascending. Includes computed fields:
     duration_years, trimestres_estimated, overlap detection.
+
+    Query params:
+        owner: "user" (default) or "spouse".
     """
     result = await db.execute(
         select(CareerPeriod)
         .where(
             CareerPeriod.user_id == current_user.id,
             CareerPeriod.is_active == True,
+            CareerPeriod.owner == owner,
         )
         .order_by(CareerPeriod.start_date)
     )
     periods = result.scalars().all()
 
-    # Build simple dicts for overlap detection
     all_dicts = [
-        {
-            "id": p.id,
-            "start_date": p.start_date,
-            "end_date": p.end_date,
-        }
+        {"id": p.id, "start_date": p.start_date, "end_date": p.end_date}
         for p in periods
     ]
 
@@ -135,19 +139,21 @@ async def list_career_periods(
 
 @router.get("/summary", response_model=CareerSummaryResponse)
 async def career_summary(
+    owner: str = Query(default="user", regex="^(user|spouse)$"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Aggregated career summary with trimestre count and timeline.
 
-    Used by the frontend to show the "X / Y trimestres" progress bar
-    and the career timeline visualization.
+    Query params:
+        owner: "user" (default) or "spouse".
     """
     result = await db.execute(
         select(CareerPeriod)
         .where(
             CareerPeriod.user_id == current_user.id,
             CareerPeriod.is_active == True,
+            CareerPeriod.owner == owner,
         )
         .order_by(CareerPeriod.start_date)
     )
@@ -166,7 +172,6 @@ async def career_summary(
     total_years = 0.0
     regimes: set[str] = set()
     timeline_entries: list[dict] = []
-
     current_period_data = None
 
     for p in periods:
@@ -191,18 +196,15 @@ async def career_summary(
         if regime:
             regimes.add(regime)
 
-        # Is this the current (ongoing) period?
         if p.end_date is None:
             current_period_data = {
                 "type": p.period_type,
                 "since": p.start_date.isoformat(),
             }
 
-        # Build yearly timeline entries
         start_year = p.start_date.year
         end_year = end.year + 1
         for yr in range(start_year, end_year):
-            # Simple: 4 trimestres/year if full year of CDI, otherwise estimate
             year_trimestres = min(4, max(0, trimestres // max(1, end_year - start_year)))
             timeline_entries.append({
                 "year": yr,
@@ -212,15 +214,8 @@ async def career_summary(
                 "regime": regime,
             })
 
-    # Estimate birth year from current AE period start
-    # Fallback: assume birth year for 172 trimestres (post-1973)
-    # In practice the projection engine provides the actual birth year
-    trimestres_requis_val = 172  # Default for post-1973
-    if current_period_data:
-        # We'd need the user's birth_date from profile — default for now
-        pass
+    trimestres_requis_val = 172
 
-    # Deduplicate and sort timeline
     seen_years: set[int] = set()
     unique_timeline: list[dict] = []
     for entry in timeline_entries:
@@ -261,7 +256,6 @@ async def get_career_period(
     if period is None:
         raise HTTPException(status_code=404, detail="Career period not found")
 
-    # Get all periods for overlap detection
     all_result = await db.execute(
         select(CareerPeriod).where(
             CareerPeriod.user_id == current_user.id,
@@ -285,11 +279,13 @@ async def create_career_period(
     """Create a new career period.
 
     pension_regime is auto-derived from period_type if not provided.
+    owner defaults to "user"; set to "spouse" for spouse career periods.
     """
     regime = resolve_pension_regime(data.period_type, data.pension_regime)
 
     period = CareerPeriod(
         user_id=current_user.id,
+        owner=data.owner,
         period_type=data.period_type,
         start_date=data.start_date,
         end_date=data.end_date,
@@ -307,7 +303,6 @@ async def create_career_period(
     await db.commit()
     await db.refresh(period)
 
-    # Compute overlap with existing periods
     all_result = await db.execute(
         select(CareerPeriod).where(
             CareerPeriod.user_id == current_user.id,
@@ -344,14 +339,14 @@ async def update_career_period(
     update_data = data.model_dump(exclude_unset=True)
 
     for field in [
-        "period_type", "start_date", "end_date", "employer_name",
-        "job_title", "annual_gross", "is_full_time", "time_percentage",
+        "period_type", "start_date", "end_date", "owner",
+        "employer_name", "job_title", "annual_gross",
+        "is_full_time", "time_percentage",
         "pension_regime", "notes", "sort_order", "is_active",
     ]:
         if field in update_data and update_data[field] is not None:
             setattr(period, field, update_data[field])
 
-    # Re-resolve pension regime if period_type changed
     if "period_type" in update_data and "pension_regime" not in update_data:
         period.pension_regime = resolve_pension_regime(
             period.period_type, period.pension_regime
@@ -360,7 +355,6 @@ async def update_career_period(
     await db.commit()
     await db.refresh(period)
 
-    # Compute overlap with existing periods
     all_result = await db.execute(
         select(CareerPeriod).where(
             CareerPeriod.user_id == current_user.id,

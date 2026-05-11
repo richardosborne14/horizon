@@ -17,31 +17,47 @@ async function fetchWithAuth(cookies: any, path: string): Promise<any> {
 }
 
 export const load: PageServerLoad = async ({ cookies }) => {
-	const [profile, growthData, currentRate, waterfallData] = await Promise.all([
+	const [profile, growthData, currentRate, waterfallData, sourcesData] = await Promise.all([
 		fetchWithAuth(cookies, '/api/profile'),
 		fetchWithAuth(cookies, '/api/constants/growth-presets'),
 		fetchWithAuth(cookies, '/api/rates/ae-rate?type=bnc_non_reglementee&year=2026'),
 		fetchWithAuth(cookies, '/api/profile/waterfall'),
+		fetchWithAuth(cookies, '/api/income-sources'),
 	]);
 
-	// Compute stats row values server-side
+	const incomeSources: any[] = sourcesData?.items ?? sourcesData ?? [];
+
+	// Compute stats row values from income sources (user AE revenue only)
 	let grossMonthly = 0;
 	let cotisationsMonthly = 0;
 	let netMonthly = 0;
-	let aeRate = '0.262';
+	let aeRate = currentRate?.rate ?? '0.262';
+	const rateNum = parseFloat(aeRate);
 
-	if (profile && profile.monthly_gross_ca) {
-		grossMonthly = parseFloat(profile.monthly_gross_ca);
-		aeRate = currentRate?.rate ?? '0.262';
-		const rateNum = parseFloat(aeRate);
-		cotisationsMonthly = Math.round(grossMonthly * rateNum * 100) / 100;
-		netMonthly = Math.round((grossMonthly - cotisationsMonthly) * 100) / 100;
+	for (const src of incomeSources) {
+		if (!src.is_active) continue;
+		if (src.earner !== 'user') continue;
+		if (!src.is_ae_revenue) continue;
+		if (src.source_type === 'salary') continue; // salaried income isn't AE CA
+
+		const amt = parseFloat(src.amount) || 0;
+		if (src.frequency === 'annual') {
+			grossMonthly += amt / 12;
+		} else if (src.frequency === 'monthly') {
+			grossMonthly += amt;
+		}
+		// one_time sources don't contribute to monthly stats
 	}
+
+	grossMonthly = Math.round(grossMonthly * 100) / 100;
+	cotisationsMonthly = Math.round(grossMonthly * rateNum * 100) / 100;
+	netMonthly = Math.round((grossMonthly - cotisationsMonthly) * 100) / 100;
 
 	return {
 		profile,
 		growthPresets: growthData?.presets ?? {},
 		stats: { grossMonthly, cotisationsMonthly, netMonthly, aeRate },
+		incomeSources,
 		waterfall: waterfallData ?? null,
 	};
 };

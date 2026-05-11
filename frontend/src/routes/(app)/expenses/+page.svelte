@@ -13,8 +13,66 @@
 	let labels = data.labels ?? {};
 	let total = data.total ?? '0';
 	let preview = data.inflationPreview ?? {};
+	let customExpenses = (data as any).customExpenses ?? [];
 	let loans = (data as any).loans ?? [];
 	let expenseTimeline = (data as any).expenseTimeline ?? null;
+
+	// ── Custom expense CRUD (TASK-7.3) ─────────────────────────────────────
+	let customDebounce: ReturnType<typeof setTimeout>;
+
+	function addCustomExpense() {
+		customExpenses = [...customExpenses, {
+			id: 'ce_' + Math.random().toString(36).slice(2, 8),
+			label: '',
+			amount: 0,
+		}];
+		onCustomChange();
+	}
+
+	function removeCustomExpense(index: number) {
+		customExpenses = customExpenses.filter((_: any, i: number) => i !== index);
+		onCustomChange();
+	}
+
+	function onCustomChange() {
+		clearTimeout(customDebounce);
+		customDebounce = setTimeout(() => saveCustomExpenses(), DEBOUNCE_MS);
+	}
+
+	function onCustomLabelInput(e: Event, idx: number) {
+		customExpenses[idx].label = (e.target as HTMLInputElement).value;
+		onCustomChange();
+	}
+
+	function onCustomAmountInput(e: Event, idx: number) {
+		customExpenses[idx].amount = parseFloat((e.target as HTMLInputElement).value) || 0;
+		onCustomChange();
+	}
+
+	async function saveCustomExpenses() {
+		saveIndicator = 'saving';
+		try {
+			// Save custom_expenses via PUT /api/profile
+			const res = await api.put('/profile', {
+				custom_expenses: customExpenses.map((ce: any) => ({
+					id: ce.id,
+					label: ce.label || 'Sans nom',
+					amount: String(ce.amount || 0),
+				})),
+			});
+			// Re-fetch total which now includes custom expenses
+			const expensesRes = await api.get<{ total: string; custom_expenses: any[] }>('/profile/expenses');
+			total = expensesRes.total;
+			customExpenses = expensesRes.custom_expenses ?? [];
+			const prev = await api.get<{ preview: any }>('/profile/expenses/inflation-preview');
+			preview = prev.preview ?? {};
+			saveIndicator = 'saved';
+			setTimeout(() => { saveIndicator = 'idle'; }, 1500);
+		} catch (err) {
+			console.error('[expenses] Custom save failed:', err);
+			saveIndicator = 'error';
+		}
+	}
 
 	// ── Expense categories (ordered for grid) ──────────────────────────────
 	const categories = [
@@ -176,6 +234,32 @@
 				</label>
 			{/each}
 		</div>
+	</Card>
+
+	<!-- Custom Expenses (TASK-7.3) -->
+	<Card title="Autres dépenses mensuelles" icon="✚" accent="sky" dataCocoDesc="Dépenses personnalisées qui ne rentrent pas dans les 12 catégories standard">
+		<p class="text-[11px] text-zinc-400 mb-3">Dépenses qui ne rentrent pas dans les catégories ci-dessus : coworking, aide ménagère, abonnements pro, etc.</p>
+
+		{#each customExpenses as expense, i (expense.id)}
+			<div class="flex items-end gap-2 mb-2">
+				<input type="text" value={expense.label} placeholder="Description"
+					oninput={(e) => onCustomLabelInput(e, i)}
+					class="flex-1 bg-zinc-900/60 border border-zinc-700/40 rounded px-2 py-1.5 text-xs text-zinc-200" />
+				<div class="relative w-28">
+					<input type="number" value={expense.amount} min="0" step="10"
+						oninput={(e) => onCustomAmountInput(e, i)}
+						class="w-full bg-zinc-900/60 border border-zinc-700/40 rounded px-2 py-1.5 text-xs text-zinc-200 pr-8" />
+					<span class="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-zinc-500">€/m</span>
+				</div>
+				<button class="text-zinc-600 hover:text-rose-400 text-sm mb-1"
+					onclick={() => removeCustomExpense(i)}>✕</button>
+			</div>
+		{/each}
+
+		<button onclick={addCustomExpense}
+			class="w-full text-center text-xs text-zinc-500 hover:text-zinc-300 py-2 border border-dashed border-zinc-700/50 rounded-lg hover:border-sky-700/50 transition-colors mt-1">
+			+ Ajouter une dépense
+		</button>
 	</Card>
 
 	<!-- Loans Section (TASK-6.3) -->

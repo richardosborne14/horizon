@@ -46,6 +46,10 @@ def _snapshot_to_read(snapshot: NetWorthSnapshot) -> NetWorthRead:
         cash_savings_other=snapshot.cash_savings_other or Decimal("0"),
         property_primary_value=snapshot.property_primary_value or Decimal("0"),
         property_other_value=snapshot.property_other_value or Decimal("0"),
+        property_appreciation_rate=snapshot.property_appreciation_rate or Decimal("0.02"),
+        downsize_enabled=bool(snapshot.downsize_enabled),
+        downsize_year=snapshot.downsize_year,
+        downsize_target_value=snapshot.downsize_target_value,
         business_value=snapshot.business_value or Decimal("0"),
         vehicle_value=snapshot.vehicle_value or Decimal("0"),
         other_assets=snapshot.other_assets or Decimal("0"),
@@ -88,6 +92,10 @@ async def get_net_worth(
             cash_savings_other=Decimal("0"),
             property_primary_value=Decimal("0"),
             property_other_value=Decimal("0"),
+            property_appreciation_rate=Decimal("0.02"),
+            downsize_enabled=False,
+            downsize_year=None,
+            downsize_target_value=None,
             business_value=Decimal("0"),
             vehicle_value=Decimal("0"),
             other_assets=Decimal("0"),
@@ -126,6 +134,10 @@ async def put_net_worth(
             cash_savings_other=body.cash_savings_other,
             property_primary_value=body.property_primary_value,
             property_other_value=body.property_other_value,
+            property_appreciation_rate=body.property_appreciation_rate,
+            downsize_enabled=body.downsize_enabled,
+            downsize_year=body.downsize_year,
+            downsize_target_value=body.downsize_target_value,
             business_value=body.business_value,
             vehicle_value=body.vehicle_value,
             other_assets=body.other_assets,
@@ -140,6 +152,10 @@ async def put_net_worth(
         snapshot.cash_savings_other = body.cash_savings_other
         snapshot.property_primary_value = body.property_primary_value
         snapshot.property_other_value = body.property_other_value
+        snapshot.property_appreciation_rate = body.property_appreciation_rate
+        snapshot.downsize_enabled = body.downsize_enabled
+        snapshot.downsize_year = body.downsize_year
+        snapshot.downsize_target_value = body.downsize_target_value
         snapshot.business_value = body.business_value
         snapshot.vehicle_value = body.vehicle_value
         snapshot.other_assets = body.other_assets

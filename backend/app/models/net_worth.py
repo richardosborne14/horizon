@@ -16,12 +16,14 @@ Design decisions:
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     Column,
-    String,
     Date,
     DateTime,
     ForeignKey,
+    Integer,
     Numeric,
+    String,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
@@ -55,6 +57,10 @@ class NetWorthSnapshot(Base):
     # ── Property ─────────────────────────────────────────────────────────
     property_primary_value = Column(Numeric(12, 2), default=0)  # Résidence principale
     property_other_value = Column(Numeric(12, 2), default=0)    # Other property
+    property_appreciation_rate = Column(Numeric(5, 4), default=0.02)  # Annual appreciation (2% default)
+    downsize_enabled = Column(Boolean, default=False)           # Enable downsizing simulation
+    downsize_year = Column(Integer, nullable=True)               # Year of downsizing
+    downsize_target_value = Column(Numeric(12, 2), nullable=True)  # Value of replacement property
     # Mortgage balance pulled from loans model
 
     # ── Other assets ─────────────────────────────────────────────────────

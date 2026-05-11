@@ -1,11 +1,7 @@
 /**
  * Horizon app layout — server load function.
  *
- * Runs on every request to any route inside (app)/.
- * Responsibilities:
- *   1. Check session cookie — redirect to /login if missing
- *   2. Verify session is still valid by calling GET /api/users/me
- *   3. Return { user } — available to all child routes via $page.data
+ * Sprint 7 (TASK-7.9): Added spouse loading for household sidebar stats.
  */
 import { redirect } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
@@ -27,37 +23,38 @@ export const load: LayoutServerLoad = async ({ cookies, fetch, url }) => {
 		const res = await fetch(`${BACKEND_URL}/api/users/me`, {
 			headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` }
 		});
-
 		if (res.status === 401) {
 			cookies.delete(SESSION_COOKIE, { path: '/' });
 			redirect(303, '/login?reason=session_expired');
 		}
-
-		if (!res.ok) {
-			console.error(`[app layout] GET /api/users/me returned ${res.status}`);
-			redirect(303, '/login');
-		}
-
+		if (!res.ok) redirect(303, '/login');
 		user = (await res.json()) as User;
 	} catch (err) {
 		console.error('[app layout] Failed to reach backend:', err);
 		redirect(303, '/login?reason=backend_unavailable');
 	}
 
-
 	// Load profile summary for sidebar stats
-	let summary = null;
+	let summary: any = null;
 	try {
 		const summaryRes = await fetch(`${BACKEND_URL}/api/profile/summary`, {
 			headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` }
 		});
-		if (summaryRes.ok) {
-			summary = await summaryRes.json();
-		}
+		if (summaryRes.ok) summary = await summaryRes.json();
 	} catch (err) {
-		// Non-critical — sidebar shows dashes if summary unavailable
 		console.error('[app layout] Failed to fetch profile summary:', err);
 	}
 
-	return { user, summary };
+	// Load spouse for household sidebar (TASK-7.9)
+	let spouse: any = null;
+	try {
+		const spouseRes = await fetch(`${BACKEND_URL}/api/spouse`, {
+			headers: { Cookie: `${SESSION_COOKIE}=${sessionToken}` }
+		});
+		if (spouseRes.ok) spouse = await spouseRes.json();
+	} catch {
+		// Non-critical — sidebar shows single-person stats
+	}
+
+	return { user, summary, spouse };
 };

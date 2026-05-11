@@ -17,10 +17,11 @@ export const load: PageServerLoad = async ({ fetch, cookies }) => {
   }
   const headers = { Cookie: `${SESSION_COOKIE}=${sessionToken}` };
 
-  // Fetch projects and profile in parallel
-  const [projectsRes, profileRes] = await Promise.all([
+  // Fetch projects, profile, and income sources in parallel
+  const [projectsRes, profileRes, sourcesRes] = await Promise.all([
     fetch(`${BACKEND_URL}/api/projects`, { headers }),
     fetch(`${BACKEND_URL}/api/profile`, { headers }),
+    fetch(`${BACKEND_URL}/api/income-sources`, { headers }),
   ]);
 
   if (!projectsRes.ok) {
@@ -36,10 +37,14 @@ export const load: PageServerLoad = async ({ fetch, cookies }) => {
 
   const allProjects = projectsData.projects ?? [];
 
+  const sourcesRaw = sourcesRes.ok ? await sourcesRes.json() : {};
+  const incomeSources = sourcesRaw?.items ?? sourcesRaw ?? [];
+
   return {
     investments: allProjects.filter((p: any) => p.project_type === 'invest'),
     events: allProjects.filter((p: any) => p.project_type === 'event'),
     profile: profileData,
     investmentCount: allProjects.filter((p: any) => p.project_type === 'invest' && p.is_active).length,
+    incomeSources,
   };
 };

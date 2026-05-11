@@ -59,6 +59,14 @@ api_router.include_router(career_router)
 from app.routers.net_worth import router as net_worth_router
 api_router.include_router(net_worth_router)
 
+# Income Sources (Sprint 7 — TASK-7.5)
+from app.routers.income_sources import router as income_sources_router
+api_router.include_router(income_sources_router)
+
+# Spouse (Sprint 7 — TASK-7.4)
+from app.routers.spouse import router as spouse_router
+api_router.include_router(spouse_router)
+
 # PDF Export (TASK-5.9)
 from app.routers.export import router as export_router
 api_router.include_router(export_router)

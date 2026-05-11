@@ -136,10 +136,115 @@
     "description": "Votre situation personnelle et fiscale — âge, statut juridique, parts fiscales.",
     "coming_soon": "Disponible dans le Sprint 1"
   },
+  "career": {
+    "title": "Parcours professionnel",
+    "description": "Ajoutez les périodes de votre carrière pour un calcul de retraite précis.",
+    "add_button": "Ajouter une période",
+    "salary_labels": {
+      "cdi": "Salaire brut annuel",
+      "cdd": "Salaire brut annuel",
+      "interim": "Salaire brut annuel",
+      "ae": "CA brut annuel",
+      "sasu": "Rémunération brute annuelle",
+      "unemployment": "ARE brute annuelle",
+      "parental_leave": "Indemnités brutes annuelles",
+      "education": "Revenu brut annuel",
+      "other": "Revenu brut annuel",
+      "default": "Revenu brut annuel"
+    },
+    "salary_hint": "Montant brut, avant cotisations et impôts",
+    "display_suffix": "brut/an"
+  },
   "revenue": {
     "title": "Revenus",
     "description": "Chiffre d'affaires brut mensuel, projection de croissance, avantages fiscaux.",
-    "coming_soon": "Disponible dans le Sprint 1"
+    "coming_soon": "Disponible dans le Sprint 1",
+    "ca_label": "CA brut mensuel",
+    "ca_hint": "Avant cotisations sociales et impôts",
+    "sources": {
+      "title": "Sources de revenus",
+      "description": "Gérez vos différentes sources de revenus. Chaque source a son propre rythme, sa durée et son niveau de confiance.",
+      "add_button": "Ajouter une source",
+      "delete_confirm": "Supprimer cette source de revenu ?",
+      "delete": "Supprimer cette source",
+      "no_sources": "Aucune source de revenu",
+      "field_label": "Nom",
+      "field_type": "Type",
+      "field_frequency": "Fréquence",
+      "field_amount": "Montant (€)",
+      "field_confidence": "Confiance",
+      "field_start_date": "Date de début",
+      "field_end_date": "Date de fin",
+      "field_growth_rate": "Croissance annuelle (%)",
+      "field_growth_placeholder": "Utiliser le preset global",
+      "field_ae_revenue": "Revenu AE (soumis aux cotisations)",
+      "field_notes": "Notes",
+      "field_notes_placeholder": "ex: Client principal, contrat 3 ans...",
+      "presets_prompt": "Choisissez un type de source :",
+      "presets_cancel": "Annuler",
+      "earner_you": "Vous",
+      "earner_spouse": "Conjoint",
+      "frequency_monthly": "/mois",
+      "frequency_annual": "/an",
+      "frequency_onetime": "",
+      "confidence_high": "🟢 Élevée",
+      "confidence_medium": "🟡 Moyenne",
+      "confidence_low": "🔴 Faible",
+      "source_types": {
+        "client": "Client",
+        "product": "Produit",
+        "dividends": "Dividendes",
+        "sale": "Vente",
+        "rental": "Locatif",
+        "salary": "Salaire",
+        "other": "Autre"
+      },
+      "presets": {
+        "client_regular": "Client régulier",
+        "product_saas": "Produit/SaaS",
+        "mission_onetime": "Mission ponctuelle",
+        "dividends": "Dividendes",
+        "asset_sale": "Vente d'actif",
+        "spouse_salary": "Salaire (conjoint)"
+      }
+    },
+    "timeline": {
+      "title": "Timeline des revenus",
+      "description": "Contribution mensuelle de chaque source sur les 10 prochaines années. Les sources ponctuelles ne sont pas affichées.",
+      "legend_you": "Vous",
+      "legend_spouse": "Conjoint"
+    },
+    "growth": {
+      "title": "Croissance annuelle",
+      "description": "Comment votre CA va évoluer ?",
+      "custom_label": "personnalisé",
+      "custom_field": "Taux personnalisé (%)",
+      "preview_title": "Projection sur 5 ans"
+    },
+    "tax_breaks": {
+      "title": "Avantages fiscaux",
+      "cesu_label": "CESU annuel (€)",
+      "cesu_credit": "Crédit d'impôt 50% → économie",
+      "charity_label": "Dons annuels (€)",
+      "charity_credit": "Réduction 66% → économie",
+      "per_year": "/an"
+    },
+    "waterfall": {
+      "title": "Où va votre argent ?",
+      "monthly_flow": "Flux mensuel",
+      "gross_ca": "CA brut",
+      "cotisations": "Cotisations",
+      "net_after_charges": "Net après cotis.",
+      "base_expenses": "Dépenses base",
+      "loans": "Crédits",
+      "life_costs": "Vie (enfants, etc.)",
+      "aids_credits": "Aides & crédits",
+      "disposable": "Revenu disponible",
+      "savings": "Épargne prévue",
+      "surplus": "Excédent",
+      "deficit": "Déficit",
+      "breakeven": "Équilibre"
+    }
   },
   "expenses": {
     "title": "Charges",
@@ -226,6 +331,24 @@
       "default_label": "Événement",
       "year": "Année",
       "cost": "Coût"
+    },
+    "income": {
+      "title": "Projets de revenus",
+      "description": "Sources de revenus futures — lancement de produit, vente d'entreprise, dividendes, nouveau contrat.",
+      "add_button": "Ajouter un projet de revenu",
+      "delete_confirm": "Supprimer ce projet de revenu ?",
+      "delete": "Supprimer",
+      "default_label": "Nouveau projet",
+      "start_label": "À partir de",
+      "source_types": {
+        "client": "Client",
+        "product": "Produit",
+        "dividends": "Dividendes",
+        "sale": "Vente",
+        "rental": "Locatif",
+        "salary": "Salaire",
+        "other": "Autre"
+      }
     },
     "status": {
       "title": "Changement de statut juridique",

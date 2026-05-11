@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -93,6 +93,7 @@ def _profile_to_read(profile: UserProfile) -> dict:
         "charity_annual": str(profile.charity_annual),
         "caf_override_monthly": _serialise(profile.caf_override_monthly),
         "monthly_expenses": profile.monthly_expenses or {},
+        "custom_expenses": profile.custom_expenses or [],
         "monthly_revenue_goal": _serialise(profile.monthly_revenue_goal),
         "world_scale": profile.world_scale,
         "status_change_enabled": profile.status_change_enabled,
@@ -158,10 +159,16 @@ async def get_expenses(
     for cat in EXPENSE_CATEGORIES:
         expense_vals[cat] = str(Decimal(str(stored.get(cat, 0))))
 
-    total = sum(Decimal(v) for v in expense_vals.values())
+    base_total = sum(Decimal(v) for v in expense_vals.values())
+    custom_expenses = profile.custom_expenses or []
+    custom_total = sum(
+        Decimal(str(ce.get("amount", "0"))) for ce in custom_expenses
+    )
+    total = base_total + custom_total
 
     return {
         "expenses": expense_vals,
+        "custom_expenses": custom_expenses,
         "labels": EXPENSE_LABELS,
         "total": str(total),
     }
@@ -173,9 +180,11 @@ async def update_expenses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Update only the monthly_expenses JSONB column.
+    """Update the 12 standard monthly_expenses JSONB categories.
 
-    Accepts a full MonthlyExpenses object — replaces all 12 categories.
+    Custom expenses are saved separately via PUT /api/profile
+    with {"custom_expenses": [...]}. This endpoint only handles
+    the 12 standard categories defined in EXPENSE_CATEGORIES.
     """
     profile = await _get_or_create_profile(current_user.id, db)
 
@@ -188,10 +197,18 @@ async def update_expenses(
     await db.commit()
     await db.refresh(profile)
 
+    base_total = sum(Decimal(v) for v in expenses_dict.values())
+    custom_list = profile.custom_expenses or []
+    custom_total = sum(
+        Decimal(str(ce.get("amount", "0"))) for ce in custom_list
+    )
+    total = base_total + custom_total
+
     return {
         "expenses": expenses_dict,
+        "custom_expenses": custom_list,
         "labels": EXPENSE_LABELS,
-        "total": str(data.total),
+        "total": str(total),
     }
 
 

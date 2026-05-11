@@ -29,6 +29,7 @@ from app.models.loan import Loan
 from app.models.profile import UserProfile
 from app.models.project import Project
 from app.models.recurring_expense import RecurringExpense
+from app.models.spouse import Spouse
 from app.models.user import User
 from app.schemas.projection import (
     CompareResponse,
@@ -47,6 +48,34 @@ from app.schemas.projection import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projection", tags=["projection"])
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def _compute_cc_annual(cc_option: str, user_ca_annual: Decimal) -> Decimal:
+    """Compute annual CC (conjointe collaboratrice) cotisation.
+
+    Based on the chosen cotisation base option and the user's annual CA.
+
+    Args:
+        cc_option: The CC option (tiers_plafond, moitie_plafond, tiers_revenu, moitie_revenu).
+        user_ca_annual: The user's annual chiffre d'affaires.
+
+    Returns:
+        Annual cotisation amount in €.
+    """
+    PLAFOND_SS = Decimal("46368")
+    CC_RATE = Decimal("0.28")  # ~28% includes all CG branches
+
+    bases: dict[str, Decimal] = {
+        "tiers_plafond": PLAFOND_SS / Decimal("3"),
+        "moitie_plafond": PLAFOND_SS / Decimal("2"),
+        "tiers_revenu": user_ca_annual / Decimal("3"),
+        "moitie_revenu": user_ca_annual / Decimal("2"),
+    }
+    base = bases.get(cc_option, Decimal("0"))
+    return (base * CC_RATE).quantize(Decimal("0.01"))
 
 
 # ── Data assembly helper ────────────────────────────────────────────────────
@@ -137,11 +166,14 @@ async def _assemble_input(
         profile.growth_rate_custom,
     )
 
-    # Sum monthly expenses from JSONB
+    # Sum monthly expenses from JSONB (12 standard + custom)
     monthly_expenses_total = Decimal("0")
     if profile.monthly_expenses:
         for amount in profile.monthly_expenses.values():
             monthly_expenses_total += Decimal(str(amount))
+    # Include custom expenses
+    for ce in (profile.custom_expenses or []):
+        monthly_expenses_total += Decimal(str(ce.get("amount", "0")))
 
     # Life entities → pre-process flat schedule
     life_entities: list[dict] = []
@@ -245,6 +277,81 @@ async def _assemble_input(
         profile, "pension_monthly", None
     ) or Decimal("0")
 
+    # Income Tax (TASK-7.12) — assemble IR parameters from profile + spouse
+    tax_parts = profile.tax_parts if profile.tax_parts else Decimal("1")
+    has_vl = bool(profile.has_versement_liberatoire)
+
+    spouse_annual_income = Decimal("0")
+    spouse_row = await db.execute(
+        select(Spouse).where(Spouse.user_id == user_id)
+    )
+    spouse = spouse_row.scalar_one_or_none()
+    if spouse is not None and spouse.monthly_gross_income is not None:
+        spouse_annual_income = spouse.monthly_gross_income * Decimal("12")
+
+    # ── Spouse projection fields (TASK-7.8) ───────────────────────────
+    spouse_monthly_gross = Decimal("0")
+    spouse_growth_rate = Decimal("0.03")
+    spouse_ae_type = None
+    spouse_pension_monthly = Decimal("0")
+    cc_annual_cotisation = Decimal("0")
+
+    if spouse is not None:
+        spouse_monthly_gross = spouse.monthly_gross_income or Decimal("0")
+        spouse_ae_type = spouse.ae_activity_type
+
+        # Compute CC annual cotisation if applicable
+        if spouse.is_conjointe_collaboratrice and spouse.cc_cotisation_option:
+            user_ca_annual = (profile.monthly_gross_ca or Decimal("0")) * Decimal("12")
+            cc_annual_cotisation = _compute_cc_annual(
+                spouse.cc_cotisation_option, user_ca_annual,
+            )
+
+    # ── Income sources (TASK-7.8) ─────────────────────────────────────
+    from app.models.income_source import IncomeSource
+    sources_result = await db.execute(
+        select(IncomeSource).where(
+            IncomeSource.user_id == user_id,
+            IncomeSource.is_active == True,
+        )
+    )
+    income_sources_list: list[dict] | None = None
+    for s in sources_result.scalars().all():
+        if income_sources_list is None:
+            income_sources_list = []
+        income_sources_list.append({
+            "earner": s.earner,
+            "label": s.label,
+            "amount": str(s.amount),
+            "frequency": s.frequency,
+            "start_date": s.start_date.isoformat() if s.start_date else None,
+            "end_date": s.end_date.isoformat() if s.end_date else None,
+            "annual_growth_rate": str(s.annual_growth_rate) if s.annual_growth_rate else None,
+            "is_ae_revenue": s.is_ae_revenue,
+        })
+
+    # ── Property (TASK-7.16) — load from net worth snapshot ───────────
+    from app.models.net_worth import NetWorthSnapshot
+    nw_result = await db.execute(
+        select(NetWorthSnapshot).where(
+            NetWorthSnapshot.user_id == user_id,
+        )
+    )
+    nw = nw_result.scalar_one_or_none()
+
+    prop_value = Decimal("0")
+    prop_appreciation = Decimal("0.02")
+    downsize_enabled = False
+    downsize_year: int | None = None
+    downsize_target = Decimal("0")
+
+    if nw is not None:
+        prop_value = (nw.property_primary_value or Decimal("0"))
+        prop_appreciation = (nw.property_appreciation_rate or Decimal("0.02"))
+        downsize_enabled = bool(nw.downsize_enabled)
+        downsize_year = nw.downsize_year
+        downsize_target = (nw.downsize_target_value or Decimal("0"))
+
     return ProjectionInput(
         current_age=current_age,
         target_age=profile.target_retirement_age,
@@ -269,6 +376,21 @@ async def _assemble_input(
         status_change_savings=profile.status_change_savings,
         loans=loans_list,
         monthly_revenue_goal=profile.monthly_revenue_goal,
+        tax_parts=tax_parts,
+        versement_liberatoire=has_vl,
+        spouse_annual_income=spouse_annual_income,
+        # TASK-7.8 spouse fields
+        spouse_monthly_gross=spouse_monthly_gross,
+        spouse_growth_rate=spouse_growth_rate,
+        spouse_ae_type=spouse_ae_type,
+        spouse_pension_monthly=spouse_pension_monthly,
+        cc_annual_cotisation=cc_annual_cotisation,
+        income_sources=income_sources_list,
+        property_value=prop_value,
+        property_appreciation_rate=prop_appreciation,
+        downsize_enabled=downsize_enabled,
+        downsize_year=downsize_year,
+        downsize_target_value=downsize_target,
     )
 
 
@@ -385,15 +507,37 @@ async def get_pension_estimate(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return an indicative state pension (retraite) estimate.
+    """Return an indicative state pension (retraite) estimate for the household.
 
-    Uses the user's CA history from the projection engine to estimate
-    trimestres validés, retraite de base, and retraite complémentaire.
+    Computes user pension (via AE ca_history) and, if a spouse exists,
+    spouse pension (via career history + optional CC trimestres).
+
+    Response shape:
+        {
+            "user_pension": { ... flat pension dict ... },
+            "spouse_pension": { ... flat pension dict or null ... },
+            "household_pension_monthly": "xxx.xx"
+        }
 
     IMPORTANT: This is an indicative estimate, not a replacement for
     info-retraite.fr. Always display with a caveat.
     """
-    from app.calculations.pension import estimate_monthly_pension
+    from datetime import date as date_type
+    from decimal import Decimal as Dec
+
+    from app.calculations.pension import (
+        estimate_monthly_pension,
+        estimate_monthly_pension_v2,
+        estimate_cc_trimestres_per_year,
+        get_trimestres_requis,
+        TAUX_PLEIN,
+        DECOTE_PER_TRIMESTRE,
+        SURCOTE_PER_TRIMESTRE,
+        MAX_DECOTE_TRIMESTRES,
+        AGE_TAUX_PLEIN_AUTO,
+        PASS,
+    )
+    from app.models.career_period import CareerPeriod
 
     # Validate scale
     if scale not in INFLATION_SCALES:
@@ -402,6 +546,8 @@ async def get_pension_estimate(
             status_code=422,
             detail=f"Échelle inconnue: {scale!r}. Valides: {valid}",
         )
+
+    infl_rate = INFLATION_SCALES[scale]["inflation"]
 
     # Get profile for birth date and activity type
     profile_result = await db.execute(
@@ -434,16 +580,160 @@ async def get_pension_estimate(
         t.gross_annual for t in timeline if not t.is_retirement
     ]
 
-    # Compute pension estimate
-    result = estimate_monthly_pension(
+    # Compute user pension estimate (v1 — AE-focused, unchanged)
+    user_pension = estimate_monthly_pension(
         birth_year=birth_year,
         activity_type=activity_type,
         ca_history=ca_history,
         retirement_age=profile.target_retirement_age,
-        inflation_rate=INFLATION_SCALES[scale]["inflation"],
+        inflation_rate=infl_rate,
     )
 
-    return result
+    # ── Spouse pension (TASK-7.7) ──────────────────────────────────────
+    spouse_pension = None
+
+    spouse_row = await db.execute(
+        select(Spouse).where(Spouse.user_id == str(current_user.id))
+    )
+    spouse = spouse_row.scalar_one_or_none()
+
+    if spouse is not None and spouse.birth_date is not None:
+        # Fetch spouse career periods
+        sp_career_result = await db.execute(
+            select(CareerPeriod)
+            .where(
+                CareerPeriod.user_id == str(current_user.id),
+                CareerPeriod.is_active == True,
+                CareerPeriod.owner == "spouse",
+            )
+            .order_by(CareerPeriod.start_date)
+        )
+        sp_periods = sp_career_result.scalars().all()
+
+        # Build career dicts for v2
+        spouse_career_dicts: list[dict] = []
+        for cp in sp_periods:
+            spouse_career_dicts.append({
+                "period_type": cp.period_type,
+                "start_date": cp.start_date.isoformat() if cp.start_date else None,
+                "end_date": cp.end_date.isoformat() if cp.end_date else None,
+                "annual_gross": cp.annual_gross,
+                "is_full_time": cp.is_full_time,
+                "time_percentage": cp.time_percentage,
+                "notes": cp.notes,
+            })
+
+        # Compute CC trimestres if applicable
+        cc_trimestres_total = 0
+        if (
+            spouse.is_conjointe_collaboratrice
+            and spouse.cc_cotisation_option
+            and profile.target_retirement_age
+        ):
+            spouse_age = date_type.today().year - spouse.birth_date.year
+            years_to_retirement = max(
+                0, profile.target_retirement_age - spouse_age
+            )
+            # For each projected year, estimate CC trimestres from user's CA
+            for i in range(years_to_retirement):
+                if i < len(ca_history):
+                    projected_ca = ca_history[i]
+                elif ca_history:
+                    # Extend last CA with growth for years beyond history
+                    projected_ca = ca_history[-1] * (
+                        (Dec("1") + inp.growth_rate) ** (i - len(ca_history) + 1)
+                    )
+                else:
+                    projected_ca = Dec("0")
+                cc_trimestres_total += estimate_cc_trimestres_per_year(
+                    spouse.cc_cotisation_option, projected_ca
+                )
+
+        # Call v2 for spouse career-aware pension
+        spouse_v2 = estimate_monthly_pension_v2(
+            birth_year=spouse.birth_date.year,
+            career_periods=spouse_career_dicts,
+            projected_ae_ca=[],  # CC handled separately below
+            ae_activity_type=spouse.ae_activity_type or "bnc_non_reglementee",
+            retirement_age=profile.target_retirement_age,
+            current_year=date_type.today().year,
+            inflation_rate=infl_rate,
+        )
+
+        # Add CC trimestres to v2 result
+        v2_trimestres = spouse_v2["trimestres"]
+        total_trimestres = v2_trimestres["total"] + cc_trimestres_total
+        trimestres_requis = get_trimestres_requis(spouse.birth_date.year)
+
+        # Recompute taux/decote with CC trimestres included
+        is_taux_plein_age = profile.target_retirement_age >= AGE_TAUX_PLEIN_AUTO
+        is_taux_plein_trimestres = total_trimestres >= trimestres_requis
+        is_taux_plein = is_taux_plein_age or is_taux_plein_trimestres
+        missing_trimestres = max(0, trimestres_requis - total_trimestres)
+
+        if is_taux_plein:
+            taux = TAUX_PLEIN
+            if (
+                profile.target_retirement_age > AGE_TAUX_PLEIN_AUTO
+                and total_trimestres > trimestres_requis
+            ):
+                extra = total_trimestres - trimestres_requis
+                surcote = min(Dec(str(extra)), Dec("20")) * SURCOTE_PER_TRIMESTRE
+                taux = min(TAUX_PLEIN + surcote, Dec("0.625"))
+        else:
+            missing = min(missing_trimestres, MAX_DECOTE_TRIMESTRES)
+            taux = TAUX_PLEIN - (Dec(str(missing)) * DECOTE_PER_TRIMESTRE)
+            taux = max(taux, Dec("0.375"))
+
+        # Use v2's SAM (before CC augmentation) — CC cotisation base adds
+        # to the spouse's pension rights but SAM is from salaried income
+        sam = spouse_v2.get("sam", Dec("0"))
+        if isinstance(sam, (int, float)):
+            sam = Dec(str(sam))
+
+        # Compute base pension with CC trimestres
+        prorata = min(
+            Dec("1"),
+            Dec(str(total_trimestres)) / Dec(str(trimestres_requis)),
+        )
+        base_annual = sam * taux * prorata
+        base_monthly = base_annual / Dec("12")
+
+        # Complementaire from v2
+        complementaire_monthly = Dec(
+            str(spouse_v2.get("complementaire_monthly", "0"))
+        )
+
+        total_monthly = base_monthly + complementaire_monthly
+
+        spouse_pension = {
+            "total_monthly": total_monthly.quantize(Dec("0.01")),
+            "base_monthly": base_monthly.quantize(Dec("0.01")),
+            "complementaire_monthly": complementaire_monthly.quantize(Dec("0.01")),
+            "trimestres_valides": total_trimestres,
+            "trimestres_requis": trimestres_requis,
+            "taux": taux.quantize(Dec("0.0001")),
+            "is_taux_plein": is_taux_plein,
+            "includes_cc_trimestres": cc_trimestres_total,
+            "confidence": spouse_v2.get("confidence", "low"),
+        }
+
+    # ── Household total ────────────────────────────────────────────────
+    user_monthly = Dec(str(user_pension.get("total_monthly", "0")))
+    spouse_monthly = (
+        Dec(str(spouse_pension["total_monthly"]))
+        if spouse_pension
+        else Dec("0")
+    )
+    household_pension_monthly = (
+        user_monthly + spouse_monthly
+    ).quantize(Dec("0.01"))
+
+    return {
+        "user_pension": user_pension,
+        "spouse_pension": spouse_pension,
+        "household_pension_monthly": household_pension_monthly,
+    }
 
 
 # ── Scenario comparison endpoint (TASK-5.7) ───────────────────────────────
@@ -1041,6 +1331,84 @@ async def get_sensitivity_analysis(
     )
 
 
+# ── Goal solver endpoint (TASK-7.11) ────────────────────────────────────
+
+
+@router.get("/goal-solver")
+async def solve_goal_endpoint(
+    target_monthly: float = Query(..., description="Target monthly income at retirement"),
+    target_age: int = Query(..., description="Target age to reach the goal"),
+    scale: str = Query(default="moderate"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Find what changes are needed to reach a target monthly income by a target age.
+
+    Tests 5 levers independently via binary search:
+      - Increase monthly savings
+      - Reduce monthly expenses
+      - Increase CA growth rate
+      - Work longer (delay retirement)
+      - Redirect savings to PEA (higher yield)
+
+    Returns solutions ranked by feasibility (easy → extreme).
+
+    Each solution includes the current value, required value, and change amount.
+    Performance: ~100 projection passes, target < 3s.
+    """
+    from app.calculations.goal_solver import solve_goal
+
+    if scale not in INFLATION_SCALES:
+        valid = ", ".join(INFLATION_SCALES.keys())
+        raise HTTPException(
+            status_code=422,
+            detail=f"Échelle inconnue: {scale!r}. Valides: {valid}",
+        )
+
+    try:
+        inp = await _assemble_input(str(current_user.id), scale, db)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to assemble projection input for goal solver")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors de la préparation des données",
+        ) from exc
+
+    target_monthly_dec = Decimal(str(target_monthly))
+    inp.monthly_revenue_goal = target_monthly_dec
+
+    try:
+        solutions = solve_goal(inp, target_monthly_dec, target_age, scale)
+    except Exception as exc:
+        logger.exception("Goal solver failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Erreur lors du calcul des solutions",
+        ) from exc
+
+    return {
+        "target_monthly": target_monthly,
+        "target_age": target_age,
+        "solutions": [
+            {
+                "lever": s.lever,
+                "label": s.label,
+                "description": s.description,
+                "current_value": s.current_value,
+                "required_value": s.required_value,
+                "change_amount": s.change_amount,
+                "feasibility": s.feasibility,
+                "goal_year": s.goal_year,
+                "goal_age": s.goal_age,
+            }
+            for s in solutions
+        ],
+        "has_solution": len(solutions) > 0,
+    }
+
+
 # ── Lifecycle alerts endpoint (TASK-6.9) ────────────────────────────────
 
 
@@ -1461,3 +1829,190 @@ async def get_year_drill_down(
         investments=investments,
         summary=summary,
     )
+
+
+# ── Action Plan (TASK-7.17) ──────────────────────────────────────────────────
+
+
+@router.get("/action-plan")
+async def get_action_plan(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate this month's prioritized action plan.
+
+    Returns a list of concrete, specific actions the user should take
+    this month to improve their financial trajectory. Each action includes
+    a specific € amount where applicable and a navigation link.
+
+    Capped at 10 actions, sorted by priority (1=do now, 2=this week, 3=this month).
+    """
+    from app.calculations.action_plan import generate_action_plan
+    from app.models.income_source import IncomeSource
+
+    # Load profile
+    profile_result = await db.execute(
+        select(UserProfile).where(UserProfile.user_id == str(current_user.id))
+    )
+    profile = profile_result.scalar_one_or_none()
+
+    profile_context = {
+        "cesu_annual": str(profile.cesu_annual or Decimal("0")) if profile else "0",
+        "status": profile.status if profile else "ae",
+    }
+
+    # Load investments
+    allocs_result = await db.execute(
+        select(InvestmentAllocation).where(
+            InvestmentAllocation.user_id == str(current_user.id)
+        )
+    )
+    investments: dict[str, dict] = {}
+    for alloc in allocs_result.scalars().all():
+        investments[alloc.vehicle_key] = {
+            "existing_balance": str(alloc.existing_balance or Decimal("0")),
+            "monthly_contribution": str(alloc.monthly_contribution or Decimal("0")),
+        }
+
+    # Load active income sources
+    sources_result = await db.execute(
+        select(IncomeSource).where(
+            IncomeSource.user_id == str(current_user.id),
+            IncomeSource.is_active == True,
+        )
+    )
+    income_sources_raw: list[dict] = []
+    for s in sources_result.scalars().all():
+        income_sources_raw.append({
+            "id": str(s.id),
+            "label": s.label,
+            "amount": str(s.amount),
+            "frequency": s.frequency,
+            "end_date": s.end_date.isoformat() if s.end_date else None,
+            "confidence": s.confidence or "high",
+            "is_active": s.is_active,
+        })
+
+    # Load loans
+    loans_result = await db.execute(
+        select(Loan).where(
+            Loan.user_id == str(current_user.id),
+            Loan.is_active == True,
+        )
+    )
+    loans_raw: list[dict] = []
+    for loan in loans_result.scalars().all():
+        loans_raw.append({
+            "id": str(loan.id),
+            "label": loan.label,
+            "monthly_payment": str(loan.monthly_payment or Decimal("0")),
+            "end_date": loan.end_date.isoformat() if loan.end_date else None,
+        })
+
+    actions = generate_action_plan(
+        profile=profile_context,
+        investments=investments,
+        income_sources=income_sources_raw,
+        loans=loans_raw,
+        advice=[],
+    )
+
+    return {
+        "month": date.today().strftime("%B %Y"),
+        "actions": [
+            {
+                "id": a.id,
+                "priority": a.priority,
+                "category": a.category,
+                "title": a.title,
+                "detail": a.detail,
+                "amount": str(a.amount) if a.amount else None,
+                "link_to": a.link_to,
+            }
+            for a in actions
+        ],
+        "count": len(actions),
+    }
+
+
+# ── Prescriptive Advice (TASK-7.15) ───────────────────────────────────────────
+
+
+@router.get("/advice")
+async def get_advice(
+    scale: str = Query(default="moderate"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate prescriptive advice based on the user's projection and financial data.
+
+    Returns a list of actionable advice items with priority, impact estimates,
+    and navigation links. Rule-based — no LLM.
+    """
+    from app.calculations.advice import generate_advice
+
+    # Assemble projection input and run engine
+    inp = await _assemble_input(str(current_user.id), scale, db)
+    timeline = project_timeline(inp)
+
+    # Get expense events (reuse existing helper from TASK-6.6)
+    key_events = _detect_expense_events(timeline, inp)
+
+    # Build investments dict from allocations
+    investments: dict[str, dict] = {}
+    allocs_result = await db.execute(
+        select(InvestmentAllocation).where(
+            InvestmentAllocation.user_id == str(current_user.id)
+        )
+    )
+    for alloc in allocs_result.scalars().all():
+        investments[alloc.vehicle_key] = {
+            "existing_balance": str(alloc.existing_balance),
+            "monthly_contribution": str(alloc.monthly_contribution),
+        }
+
+    # Check spouse status
+    spouse_row = await db.execute(
+        select(Spouse).where(Spouse.user_id == str(current_user.id))
+    )
+    spouse_data = spouse_row.scalar_one_or_none()
+
+    # Get profile for status
+    profile_result = await db.execute(
+        select(UserProfile).where(UserProfile.user_id == str(current_user.id))
+    )
+    profile = profile_result.scalar_one_or_none()
+
+    profile_context = {
+        "status": profile.status if profile else "ae",
+        "target_retirement_age": inp.target_age if inp.target_age else 70,
+        "has_spouse": spouse_data is not None,
+        "spouse_is_cc": spouse_data.is_conjointe_collaboratrice if spouse_data else False,
+    }
+
+    advice_list = generate_advice(
+        timeline,
+        [],
+        [{"category": e.category, "event": e.event, "impact_monthly": e.impact_monthly, "year": e.year}
+         for e in key_events],
+        profile_context,
+        investments,
+    )
+
+    return {
+        "advice": [
+            {
+                "id": a.id,
+                "category": a.category,
+                "priority": a.priority,
+                "title": a.title,
+                "description": a.description,
+                "impact_text": a.impact_text,
+                "action_text": a.action_text,
+                "trigger_year": a.trigger_year,
+                "link_to": a.link_to,
+            }
+            for a in advice_list
+        ],
+        "count": len(advice_list),
+    }

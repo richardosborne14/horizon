@@ -107,10 +107,15 @@ class TestScenarioABareMinimum:
 
         # total_income = gross = 36000
         _approx(Decimal("36000"), t.total_income)
-        # total_outgoing = charges + cfe = 9432 + 300 = 9732
-        _approx(Decimal("9732"), t.total_outgoing)
-        # net = 36000 - 9732 = 26268
-        _approx(Decimal("26268"), t.net_annual)
+        # total_outgoing = charges + cfe + IR = 9432 + 300 + 1371.26 = 11103.26
+        # IR: BNC 36000, abattement 34% → 23760 taxable, 1 part → IR ~1371.26
+        _approx(Decimal("11103"), t.total_outgoing, Decimal("2"))
+        # net = 36000 - 11103.26 = 24896.74
+        _approx(Decimal("24897"), t.net_annual, Decimal("2"))
+        # IR fields should be populated
+        _approx(Decimal("1371.26"), t.ir_annual, Decimal("1"))
+        _approx(Decimal("114.27"), t.ir_monthly, Decimal("0.5"))
+        assert t.taux_effectif_ir > Decimal("0")
 
         # No investments
         _approx_zero(t.year_invested)

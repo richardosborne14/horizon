@@ -65,8 +65,12 @@ def test_run_sensitivity_analysis_basic():
     results = run_sensitivity_analysis(inp)
 
     # All 6 parameter nudges should produce results
+    # (spouse_income_increase is skipped when no spouse exists)
     assert len(results) >= 5
-    expected_params = set(NUDGES.keys())
+    expected_params = {
+        k for k, v in NUDGES.items()
+        if not v.get("requires_spouse") or inp.spouse_monthly_gross > Decimal("0")
+    }
     result_params = {r.parameter for r in results}
     assert expected_params == result_params
 
@@ -176,8 +180,12 @@ def test_each_nudge_produces_different_wealth():
         monthly_expenses_total=Decimal("4000"),
     )
     results = run_sensitivity_analysis(inp)
-    # All 6 nudges should have executed (no exceptions)
-    assert len(results) == len(NUDGES)
+    # All non-spouse nudges should have executed (no exceptions)
+    expected_count = sum(
+        1 for k, v in NUDGES.items()
+        if not v.get("requires_spouse") or inp.spouse_monthly_gross > Decimal("0")
+    )
+    assert len(results) == expected_count
 
 
 def test_base_wealth_consistent():
@@ -205,14 +213,14 @@ def test_add_to_savings_proportional():
 
 
 def test_add_to_savings_zero_total():
-    """_add_to_savings with zero total savings does nothing."""
+    """_add_to_savings with zero total savings seeds the first vehicle."""
     inp = _minimal_input(
         allocations={
             "livret_a": {"balance": Decimal("0"), "monthly": Decimal("0")},
         }
     )
     _add_to_savings(inp, Decimal("200"))
-    assert inp.allocations["livret_a"]["monthly"] == Decimal("0")
+    assert inp.allocations["livret_a"]["monthly"] == Decimal("200")
 
 
 def test_sensitivity_skips_invalid_nudge():

@@ -17,6 +17,16 @@
 	];
 
 	$: currentSection = $page.url.pathname.split('/')[1] || 'identity';
+
+	// Household CA: include spouse income (TASK-7.9)
+	$: householdCA = data.summary?.monthly_gross_ca
+		? Number(data.summary.monthly_gross_ca)
+		: 0;
+	$: spouseIncome = data.spouse?.monthly_gross_income
+		? Number(data.spouse.monthly_gross_income)
+		: 0;
+	$: householdTotal = householdCA + spouseIncome;
+	$: hasSpouse = data.spouse != null;
 </script>
 
 {#if $navigating}
@@ -66,10 +76,10 @@
 				<div class="text-[10px] space-y-1.5 text-zinc-400">
 					{#if data.summary}
 						<div class="flex justify-between">
-							<span>CA/mois</span>
+							<span>{hasSpouse ? 'CA foyer/mois' : 'CA/mois'}</span>
 							<span class="font-mono text-teal-300">
 								{data.summary.monthly_gross_ca
-									? Number(data.summary.monthly_gross_ca).toLocaleString('fr-FR') + '€'
+									? householdTotal.toLocaleString('fr-FR') + '€'
 									: '—'}
 							</span>
 						</div>

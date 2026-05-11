@@ -6,12 +6,16 @@ professional life — CDI, CDD, AE, unemployment, parental leave, etc.
 The pension engine v2 (TASK-6.2) uses this to compute trimestres from
 regime général (salaried) + AE periods + other period types.
 
+Sprint 7 (TASK-7.7): Added `owner` column to distinguish user vs spouse
+career periods. Values: "user" or "spouse".
+
 Key design decisions:
 - One table for all period types (discriminated by period_type).
 - end_date=None means ongoing (current period).
 - annual_gross is the gross annual income for that period.
 - pension_regime is auto-derived from period_type if not set explicitly.
 - Overlapping periods are allowed (e.g., CDI + AE side activity).
+- owner discriminates user vs spouse career history for couple mode.
 """
 
 from uuid import uuid4
@@ -34,11 +38,13 @@ from app.core.database import Base
 
 
 class CareerPeriod(Base):
-    """A single period of the user's professional career.
+    """A single period of the user's or spouse's professional career.
 
     period_type: "cdi", "cdd", "interim", "ae", "eirl", "eurl", "sasu",
                 "apprenticeship", "internship", "unemployment",
                 "parental_leave", "education", "foreign", "other"
+
+    owner: "user" (default) or "spouse" — who this period belongs to.
 
     pension_regime: auto-derived from period_type (can be overridden):
         "general" — régime général (CNAV) for salaried work
@@ -61,6 +67,9 @@ class CareerPeriod(Base):
 
     # Period type
     period_type = Column(String(20), nullable=False)
+
+    # Owner discriminator — "user" or "spouse"
+    owner = Column(String(10), nullable=False, server_default="user")
 
     # Dates
     start_date = Column(Date, nullable=False)
@@ -100,5 +109,5 @@ class CareerPeriod(Base):
     def __repr__(self) -> str:
         return (
             f"<CareerPeriod id={self.id} type={self.period_type} "
-            f"start={self.start_date}>"
+            f"owner={self.owner} start={self.start_date}>"
         )

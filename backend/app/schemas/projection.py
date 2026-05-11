@@ -4,6 +4,7 @@ Pydantic schemas for the projection API (TASK-4.2).
 Response models for GET /api/projection — serialise the projection engine's
 dataclass output into JSON. All Decimal fields serialise as strings.
 """
+from decimal import Decimal
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -54,10 +55,22 @@ class YearProjectionOut(BaseModel):
     year_returns: str
     total_wealth: str
 
+    # Income Tax (TASK-7.12)
+    ir_annual: str = "0.00"
+    ir_monthly: str = "0.00"
+    taux_effectif_ir: str = "0.0000"
+
     # Derived
     passive_monthly: str
     total_monthly_income: str
     goal_reached: bool
+
+    # Loan expenses (Sprint 6)
+    loan_expenses: str = "0.00"
+
+    # Property (TASK-7.16)
+    property_value: str = "0.00"
+    downsize_freed: str = "0.00"
 
 
 class MilestoneOut(BaseModel):
@@ -172,9 +185,15 @@ def build_projection_response(
             year_invested=str(t.year_invested),
             year_returns=str(t.year_returns),
             total_wealth=str(t.total_wealth),
+            ir_annual=str(getattr(t, "ir_annual", Decimal("0"))),
+            ir_monthly=str(getattr(t, "ir_monthly", Decimal("0"))),
+            taux_effectif_ir=str(getattr(t, "taux_effectif_ir", Decimal("0"))),
             passive_monthly=str(t.passive_monthly),
             total_monthly_income=str(t.total_monthly_income),
             goal_reached=t.goal_reached,
+            loan_expenses=str(getattr(t, "loan_expenses", Decimal("0"))),
+            property_value=str(getattr(t, "property_value", Decimal("0"))),
+            downsize_freed=str(getattr(t, "downsize_freed", Decimal("0"))),
         )
         for t in timeline
     ]

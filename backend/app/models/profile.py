@@ -93,6 +93,11 @@ class UserProfile(Base):
         JSONB, nullable=False, server_default="{}"
     )
 
+    # ── Custom expenses (array of {id, label, amount}) ────────────────────
+    custom_expenses = Column(
+        JSONB, nullable=False, server_default="[]"
+    )
+
     # ── Goal ──────────────────────────────────────────────────────────────
     monthly_revenue_goal = Column(Numeric(10, 2), nullable=True)
 

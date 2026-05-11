@@ -16,6 +16,51 @@
 	$: investmentProjects = data.investments ?? [];
 	$: eventProjects = data.events ?? [];
 	let profile = data.profile ?? {};
+	let allIncomeSources: any[] = (data as any).incomeSources ?? [];
+
+	// ── Future income sources (Task 7.10) ──────────────────────────────────
+	$: futureIncomeSources = allIncomeSources.filter((s: any) =>
+		(s.start_date && new Date(s.start_date) > new Date()) ||
+		s.frequency === 'one_time'
+	);
+
+	const sourceTypeLabels: Record<string, string> = {
+		client: 'Client',
+		product: 'Produit',
+		dividends: 'Dividendes',
+		sale: 'Vente',
+		rental: 'Locatif',
+		salary: 'Salaire',
+		other: 'Autre',
+	};
+
+	async function addFutureIncomeSource() {
+		const nextYear = new Date().getFullYear() + 1;
+		try {
+			const created = await api.post('/income-sources', {
+				label: 'Nouveau projet',
+				source_type: 'other',
+				amount: '0',
+				frequency: 'one_time',
+				start_date: `${nextYear}-01-01`,
+				confidence: 'medium',
+				is_ae_revenue: true,
+			});
+			allIncomeSources = [...allIncomeSources, created];
+		} catch (err) {
+			console.error('[projects] Add income source failed:', err);
+		}
+	}
+
+	async function deleteIncomeSource(id: string) {
+		if (!confirm('Supprimer ce projet de revenu ?')) return;
+		try {
+			await api.delete(`/income-sources/${id}`);
+			allIncomeSources = allIncomeSources.filter((s: any) => s.id !== id);
+		} catch (err) {
+			console.error('[projects] Delete income source failed:', err);
+		}
+	}
 
 	// ── Auto-save ─────────────────────────────────────────────────────────
 	const DEBOUNCE_MS = 800;
@@ -244,6 +289,50 @@
 			</div>
 		{/each}
 		<button onclick={addInvestment} class="w-full border border-dashed border-emerald-700/40 rounded-lg py-2.5 text-xs text-emerald-400 hover:text-emerald-300 hover:border-emerald-500/60 transition-colors">+ Ajouter un investissement</button>
+	</Card>
+
+	<!-- ━━━━━━━━━━━ SECTION 2.5: Income Events (TASK-7.10) ━━━━━━━━━━━ -->
+	<Card title="Projets de revenus" icon="💰" accent="sky" dataCocoDesc="Sources de revenus futures — lancement de produit, vente d'entreprise, dividendes, nouveau contrat.">
+		<p class="text-[11px] text-zinc-400 mb-3">
+			Sources de revenus futures — lancement de produit, vente d'entreprise, dividendes, nouveau contrat.
+		</p>
+
+		{#each futureIncomeSources as source (source.id)}
+			{@const s = source}
+			<div class="p-3 bg-zinc-900/60 border border-zinc-700/30 rounded-lg mb-2" data-coco-desc="Projet de revenu {s.label} — {parseFloat(s.amount).toLocaleString('fr-FR')}€{s.frequency === 'one_time' ? '' : s.frequency === 'monthly' ? '/mois' : '/an'}">
+				<div class="flex items-center gap-2 mb-1">
+					<span class="text-xs font-medium text-zinc-200">{s.label || '—'}</span>
+					<span class="text-[9px] px-1.5 py-0.5 rounded-full bg-sky-900/40 text-sky-300">
+						{sourceTypeLabels[s.source_type] || s.source_type}
+					</span>
+					<span class="text-[9px] {s.confidence === 'high' ? 'text-emerald-400' : s.confidence === 'medium' ? 'text-amber-400' : 'text-rose-400'}">
+						{s.confidence === 'high' ? '🟢' : s.confidence === 'medium' ? '🟡' : '🔴'}
+					</span>
+				</div>
+				<div class="flex items-center gap-3 text-[10px] text-zinc-500">
+					<span class="font-mono text-sky-400">
+						{parseFloat(s.amount || '0').toLocaleString('fr-FR')}€
+						{s.frequency === 'one_time' ? '' : s.frequency === 'monthly' ? '/mois' : '/an'}
+					</span>
+					{#if s.start_date}
+						<span>À partir de {s.start_date.substring(0, 7)}</span>
+					{/if}
+					{#if s.end_date}
+						<span>→ {s.end_date.substring(0, 7)}</span>
+					{/if}
+				</div>
+				{#if s.notes}
+					<p class="text-[10px] text-zinc-600 mt-1 italic">{s.notes}</p>
+				{/if}
+				<button onclick={() => deleteIncomeSource(s.id)}
+					class="text-[10px] text-zinc-600 hover:text-rose-400 mt-1">Supprimer</button>
+			</div>
+		{/each}
+
+		<button onclick={addFutureIncomeSource}
+			class="w-full text-center text-xs text-zinc-500 hover:text-zinc-300 py-2 border border-dashed border-zinc-700/50 rounded-lg hover:border-sky-700/50 mt-1">
+			+ Ajouter un projet de revenu
+		</button>
 	</Card>
 
 	<!-- ━━━━━━━━━━━ SECTION 2: Life Events ━━━━━━━━━━━ -->

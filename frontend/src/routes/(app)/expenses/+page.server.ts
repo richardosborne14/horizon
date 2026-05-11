@@ -27,6 +27,7 @@ export const load: PageServerLoad = async ({ cookies }) => {
 
 	return {
 		expenses: expensesData?.expenses ?? {},
+		customExpenses: expensesData?.custom_expenses ?? [],
 		labels: expensesData?.labels ?? {},
 		total: expensesData?.total ?? '0',
 		inflationPreview: inflationPreview?.preview ?? {},

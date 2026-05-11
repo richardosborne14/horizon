@@ -14,6 +14,8 @@ from app.models.investment import InvestmentAllocation
 from app.models.project import Project
 from app.models.career_period import CareerPeriod
 from app.models.loan import Loan
+from app.models.income_source import IncomeSource
+from app.models.spouse import Spouse
 from app.models.net_worth import NetWorthSnapshot
 
 __all__ = [
@@ -27,6 +29,8 @@ __all__ = [
     "InvestmentAllocation",
     "Project",
     "CareerPeriod",
+    "IncomeSource",
+    "Spouse",
     "Loan",
     "NetWorthSnapshot",
 ]

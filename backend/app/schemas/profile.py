@@ -131,6 +131,14 @@ class WaterfallResponse(BaseModel):
 
 # ── Profile schemas ───────────────────────────────────────────────────────────
 
+class CustomExpenseItem(BaseModel):
+    """A single custom expense entry (array element in JSONB)."""
+
+    id: str
+    label: str
+    amount: Decimal = Field(default=Decimal("0"), ge=0)
+
+
 class ProfileWrite(BaseModel):
     """Writable profile fields — sent via PUT /api/profile.
 
@@ -162,6 +170,7 @@ class ProfileWrite(BaseModel):
     caf_override_monthly: Optional[Decimal] = Field(default=None, ge=Decimal("0"))
 
     monthly_expenses: Optional[dict] = None
+    custom_expenses: Optional[list[dict]] = None
 
     monthly_revenue_goal: Optional[Decimal] = Field(default=None, ge=0)
     world_scale: Optional[str] = None

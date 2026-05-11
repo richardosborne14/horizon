@@ -24,7 +24,77 @@
 	$: showNoBirthdate = !hasBirthdate || serverError === 'no_birthdate' || serverError === 'no_profile';
 	$: showApiError = serverError && serverError !== 'no_birthdate' && serverError !== 'no_profile';
 	$: pensionEstimate = (data as any).pensionEstimate ?? null;
+	$: spousePension = (data as any).spousePension ?? null;
+	$: householdPensionMonthly = (data as any).householdPensionMonthly ?? null;
+	$: spouse = (data as any).spouse ?? null;
+	$: hasSpouse = spouse != null;
 	$: netWorth = (data as any).netWorth ?? null;
+	$: projections = (data as any).projections ?? null;
+	$: incomeSources = (data as any).incomeSources ?? [];
+	$: adviceData = (data as any).advice ?? { advice: [], count: 0 };
+	$: adviceList = adviceData.advice || [];
+	$: actionPlan = (data as any).actionPlan ?? { actions: [], count: 0, month: '' };
+	$: actionItems = actionPlan.actions || [];
+
+	// ── TASK-7.14: Confidence band data ─────────────────────────────────
+	$: optTimeline = projections?.optimistic?.timeline || [];
+	$: modTimeline = projections?.moderate?.timeline || timeline;
+	$: pesTimeline = confidenceAdjustedPessimistic(projections?.pessimistic?.timeline || [], incomeSources);
+
+	function confidenceAdjustedPessimistic(pesTimeline: any[], sources: any[]): any[] {
+		if (!pesTimeline.length || !sources.length) return pesTimeline;
+		// Compute total low-confidence monthly income
+		const lowConfidenceMonthly = sources
+			.filter((s: any) => s.confidence === 'low' && s.is_active)
+			.reduce((sum: number, s: any) => {
+				const amt = parseFloat(s.amount || '0');
+				if (s.frequency === 'annual') return sum + amt / 12;
+				if (s.frequency === 'one_time') return sum;
+				return sum + amt;
+			}, 0);
+		const totalMonthly = sources
+			.filter((s: any) => s.is_active && s.frequency === 'monthly')
+			.reduce((sum: number, s: any) => sum + parseFloat(s.amount || '0'), 0);
+
+		if (totalMonthly === 0) return pesTimeline;
+		const uncertaintyFactor = Math.min(0.15, (lowConfidenceMonthly / totalMonthly) * 0.2);
+		if (uncertaintyFactor <= 0) return pesTimeline;
+
+		return pesTimeline.map((t: any) => ({
+			...t,
+			total_wealth: String(parseFloat(t.total_wealth || '0') * (1 - uncertaintyFactor)),
+			total_monthly_income: String(parseFloat(t.total_monthly_income || '0') * (1 - uncertaintyFactor)),
+		}));
+	}
+
+	// Band chart SVG computation helpers
+	interface BandDataPoint { value: number; year?: number; age?: number; isRetirement?: boolean; }
+	function computeBandChart(
+		optData: BandDataPoint[], modData: BandDataPoint[], pesData: BandDataPoint[],
+		w: number, h: number, top: number, bot: number
+	) {
+		const padding = { left: 50, right: 10, top: 8, bottom: 18 };
+		const cw = w - padding.left - padding.right;
+		const ch = h - padding.top - padding.bottom;
+
+		const allVals = [...optData, ...modData, ...pesData].map(d => d.value);
+		const max = Math.max(...allVals, 0);
+		const min = Math.min(...allVals, 0);
+		const range = max - min || 1;
+
+		const toY = (v: number) => padding.top + ch - ((v - min) / range) * ch * 0.9 - ch * 0.05;
+		const toX = (i: number, total: number) => padding.left + (i / Math.max(total - 1, 1)) * cw;
+
+		const topPts = optData.map((d, i) => `${toX(i, optData.length)},${toY(d.value)}`).join(' ');
+		const bottomPts = pesData.map((d, i) => `${toX(i, pesData.length)},${toY(d.value)}`).reverse().join(' ');
+		const bandPolygon = `${topPts} ${bottomPts}`;
+
+		const modLine = modData.map((d, i) => `${toX(i, modData.length)},${toY(d.value)}`).join(' ');
+		const optLine = optData.map((d, i) => `${toX(i, optData.length)},${toY(d.value)}`).join(' ');
+		const pesLine = pesData.map((d, i) => `${toX(i, pesData.length)},${toY(d.value)}`).join(' ');
+
+		return { bandPolygon, modLine, optLine, pesLine, padding, cw, ch, max, min, toX, toY };
+	}
 
 	// Initialize store and Sprint 6 data from server
 	let _s6Loaded = false;
@@ -337,6 +407,38 @@
 			>{exportLoading ? '⏳' : '📄'}</button>
 		</div>
 
+		<!-- ── Action Plan (TASK-7.17) ───────────────────────────────────── -->
+		{#if actionItems.length > 0}
+			<div class="bg-zinc-800/30 border border-teal-800/30 rounded-xl p-4">
+				<div class="flex items-center justify-between mb-3">
+					<p class="text-xs font-semibold text-zinc-300">📋 Plan d'action — {actionPlan.month || 'Ce mois'}</p>
+					<span class="text-[9px] text-zinc-500">{actionPlan.count || actionItems.length} action{actionItems.length > 1 ? 's' : ''}</span>
+				</div>
+				<div class="space-y-2">
+					{#each actionItems as action}
+						<div class="flex items-start gap-3 p-2.5 bg-zinc-900/40 border border-zinc-700/20 rounded-lg">
+							<span class="text-xs mt-0.5 flex-shrink-0 w-5 h-5 rounded-full flex items-center justify-center
+								{action.priority === 1 ? 'bg-rose-900/40 text-rose-400' :
+								 action.priority === 2 ? 'bg-amber-900/40 text-amber-400' :
+								 'bg-zinc-800 text-zinc-400'}">
+								{action.priority}
+							</span>
+							<div class="flex-1 min-w-0">
+								<p class="text-xs text-zinc-200">{action.title}</p>
+								<p class="text-[10px] text-zinc-500 mt-0.5">{action.detail}</p>
+							</div>
+							{#if action.amount}
+								<span class="text-xs font-mono text-teal-400 whitespace-nowrap">{fmt(action.amount)}</span>
+							{/if}
+							{#if action.link_to}
+								<a href={action.link_to} class="text-[10px] text-teal-400 hover:text-teal-300 whitespace-nowrap flex-shrink-0">→</a>
+							{/if}
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
 		<!-- ── Goal input card ────────────────────────────────────────────── -->
 		<div class="bg-teal-950/15 border border-teal-900/30 rounded-xl p-4">
 			<p class="text-xs font-semibold text-teal-300 mb-2">🎯 Objectif de revenu mensuel à la retraite</p>
@@ -390,14 +492,47 @@
 			</div>
 		{/if}
 
-		<!-- ── Pension Estimate (TASK-6.2) ────────────────────────────────── -->
+		<!-- ── Actions recommandées (TASK-7.15) ─────────────────────────────── -->
+		{#if adviceList.length > 0}
+			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
+				<p class="text-xs font-semibold text-zinc-300 mb-3">🎯 Actions recommandées</p>
+				<div class="space-y-2">
+					{#each adviceList as advice}
+						<div class="p-3 bg-zinc-900/40 border border-zinc-700/30 rounded-lg">
+							<div class="flex items-start gap-2">
+								<span class="text-sm mt-0.5">
+									{advice.priority === 1 ? '🔴' : advice.priority === 2 ? '🟡' : '🟢'}
+								</span>
+								<div class="flex-1">
+									<p class="text-xs text-zinc-200 font-medium">{advice.title}</p>
+									<p class="text-[10px] text-zinc-500 mt-0.5">{advice.description}</p>
+									<p class="text-[10px] text-teal-400 mt-1">{advice.impact_text}</p>
+									<p class="text-[10px] text-zinc-400 mt-0.5 italic">{advice.action_text}</p>
+								</div>
+								{#if advice.link_to}
+									<a href={advice.link_to} class="text-[10px] text-teal-400 hover:text-teal-300 whitespace-nowrap">
+										Configurer →
+									</a>
+								{/if}
+							</div>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/if}
+
+		<!-- ── Pension Estimate (TASK-6.2 / TASK-7.7) ─────────────────── -->
 		{#if pensionEstimate && parseFloat(pensionEstimate.total_monthly || '0') > 0}
 			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
-				<p class="text-xs font-semibold text-zinc-300 mb-3">🏛️ Estimation indicative de retraite</p>
+				<p class="text-xs font-semibold text-zinc-300 mb-3">
+					🏛️ Estimation indicative de retraite
+					{#if hasSpouse} — foyer{/if}
+				</p>
+				<!-- User pension -->
 				<div class="grid grid-cols-2 gap-3 mb-3">
 					<div class="bg-zinc-900/40 rounded-lg p-3 text-center">
 						<span class="block text-lg font-bold font-mono text-teal-300">{fmt(pensionEstimate.total_monthly)}</span>
-						<span class="text-[10px] text-zinc-500">Pension mensuelle estimée</span>
+						<span class="text-[10px] text-zinc-500">Pension {hasSpouse ? '(vous)' : 'mensuelle estimée'}</span>
 					</div>
 					<div class="bg-zinc-900/40 rounded-lg p-3 text-center">
 						<span class="block text-lg font-bold font-mono {pensionEstimate.is_taux_plein ? 'text-emerald-400' : 'text-amber-400'}">{parseFloat(pensionEstimate.taux || '0') * 100}%</span>
@@ -414,6 +549,43 @@
 						<div class="h-full bg-teal-500 rounded-full" style="width: {Math.min(100, ((pensionEstimate.trimestres_valides ?? 0) / (pensionEstimate.trimestres_requis || 1)) * 100)}%"></div>
 					</div>
 				</div>
+
+				<!-- Spouse pension (TASK-7.7) -->
+				{#if spousePension && parseFloat(spousePension.total_monthly || '0') > 0}
+					<div class="mt-3 pt-3 border-t border-zinc-700/40">
+						<p class="text-[10px] text-purple-300 font-medium mb-2">
+							💑 Conjoint(e) — {spouse?.first_name || 'sans nom'}
+							{#if spousePension.includes_cc_trimestres > 0}
+								<span class="text-purple-400/70"> (CC: {spousePension.includes_cc_trimestres} trim.)</span>
+							{/if}
+						</p>
+						<div class="grid grid-cols-2 gap-2 mb-2">
+							<div class="bg-purple-950/20 rounded p-2 text-center">
+								<span class="block font-mono font-bold text-purple-300">{fmt(spousePension.total_monthly)}</span>
+								<span class="text-[9px] text-zinc-500">Pension conjoint(e)</span>
+							</div>
+							<div class="bg-purple-950/20 rounded p-2 text-center">
+								<span class="block font-mono font-bold {spousePension.is_taux_plein ? 'text-emerald-400' : 'text-amber-400'}">{parseFloat(spousePension.taux || '0') * 100}%</span>
+								<span class="text-[9px] text-zinc-500">{spousePension.is_taux_plein ? 'Taux plein' : 'Décote'}</span>
+							</div>
+						</div>
+						<div class="flex items-center gap-2 text-[9px]">
+							<span class="text-zinc-500">{spousePension.trimestres_valides ?? 0} / {spousePension.trimestres_requis ?? 172} trimestres</span>
+							<div class="flex-1 h-1 bg-zinc-800 rounded-full overflow-hidden">
+								<div class="h-full bg-purple-500 rounded-full" style="width: {Math.min(100, ((spousePension.trimestres_valides ?? 0) / (spousePension.trimestres_requis || 1)) * 100)}%"></div>
+							</div>
+						</div>
+					</div>
+
+					<!-- Household total -->
+					{#if householdPensionMonthly}
+						<div class="mt-2 pt-2 border-t border-zinc-700/30 flex justify-between items-center">
+							<span class="text-[10px] text-zinc-300 font-medium">Total foyer</span>
+							<span class="font-mono font-bold text-teal-300">{fmt(householdPensionMonthly)}/mois</span>
+						</div>
+					{/if}
+				{/if}
+
 				<p class="text-[9px] text-zinc-600 mt-2">Estimation basée sur votre parcours déclaré. Consultez info-retraite.fr pour un calcul officiel.</p>
 			</div>
 		{/if}
@@ -442,23 +614,87 @@
 			</div>
 		{/if}
 
-		<!-- ── Wealth chart ────────────────────────────────────────────────── -->
+		<!-- ── Wealth chart with confidence band (TASK-7.14) ──────────────── -->
 		<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
-			<p class="text-xs font-semibold text-zinc-300 mb-2">Trajectoire patrimoine</p>
-			<AreaChart data={wealthChartData} height={140} color="#2dd4bf" goalLine={null}
-				startLabel="{firstYear?.year || ''} ({firstYear?.age || ''} ans)"
-				endLabel="{lastYear?.year || ''} ({lastYear?.age || ''} ans)"
-				showRetirementMarker={hasRetirementPhase} retirementIndex={retirementIndex > -1 ? retirementIndex : -1} />
+			<p class="text-xs font-semibold text-zinc-300 mb-2">
+				Trajectoire patrimoine
+				<span class="text-[9px] text-zinc-500 font-normal ml-2">⛅ bande de confiance</span>
+			</p>
+			{#if projections?.optimistic?.timeline && projections?.pessimistic?.timeline}
+				{@const wealthOpt = optTimeline.map((t: any) => ({ value: parseFloat(t.total_wealth || '0'), year: t.year }))}
+				{@const wealthMod = modTimeline.map((t: any) => ({ value: parseFloat(t.total_wealth || '0'), year: t.year }))}
+				{@const wealthPes = pesTimeline.map((t: any) => ({ value: parseFloat(t.total_wealth || '0'), year: t.year }))}
+				{@const wc = computeBandChart(wealthOpt, wealthMod, wealthPes, 400, 140, 8, 18)}
+				<svg viewBox="0 0 400 140" class="w-full" preserveAspectRatio="xMidYMid meet" style="height:140px">
+					<defs>
+						<linearGradient id="wealthBand" x1="0" y1="0" x2="0" y2="1">
+							<stop offset="0%" stop-color="#10b981" stop-opacity="0.12" />
+							<stop offset="100%" stop-color="#f43f5e" stop-opacity="0.04" />
+						</linearGradient>
+					</defs>
+					<!-- Confidence band -->
+					<polygon points={wc.bandPolygon} fill="url(#wealthBand)" opacity="0.5" />
+					<!-- Pessimistic line -->
+					<polyline points={wc.pesLine} fill="none" stroke="#f43f5e" stroke-width="1" stroke-dasharray="4,3" opacity="0.3" />
+					<!-- Optimistic line -->
+					<polyline points={wc.optLine} fill="none" stroke="#10b981" stroke-width="1" stroke-dasharray="4,3" opacity="0.3" />
+					<!-- Moderate line (primary) -->
+					<polyline points={wc.modLine} fill="none" stroke="#2dd4bf" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+					<!-- X-axis labels -->
+					<text x="{wc.padding.left}" y="140-3" fill="#71717a" font-size="7" font-family="JetBrains Mono, monospace" text-anchor="start">{firstYear?.year || ''}</text>
+					<text x="{wc.padding.left + wc.cw}" y="140-3" fill="#71717a" font-size="7" font-family="JetBrains Mono, monospace" text-anchor="end">{lastYear?.year || ''}</text>
+				</svg>
+			{:else}
+				<AreaChart data={wealthChartData} height={140} color="#2dd4bf" goalLine={null}
+					startLabel="{firstYear?.year || ''} ({firstYear?.age || ''} ans)"
+					endLabel="{lastYear?.year || ''} ({lastYear?.age || ''} ans)"
+					showRetirementMarker={hasRetirementPhase} retirementIndex={retirementIndex > -1 ? retirementIndex : -1} />
+			{/if}
 		</div>
 
-		<!-- ── Income chart ────────────────────────────────────────────────── -->
+		<!-- ── Income chart with confidence band (TASK-7.14) ──────────────── -->
 		<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
 			<p class="text-xs font-semibold text-zinc-300 mb-2">Revenu total mensuel (travail + passif + projets)</p>
-			<AreaChart data={incomeChartData} height={120} color="#10b981" goalLine={goalLineValue}
-				startLabel="{fmt(firstYear?.total_monthly_income || '0')}/mois"
-				endLabel="{fmt(lastYear?.total_monthly_income || '0')}/mois"
-				showRetirementMarker={hasRetirementPhase} retirementIndex={retirementIndex > -1 ? retirementIndex : -1} />
-			{#if goalLineValue}<div class="text-center mt-1"><span class="text-[9px] text-amber-400/70">Objectif: {fmt(goalLineValue)}</span></div>{/if}
+			{#if projections?.optimistic?.timeline && projections?.pessimistic?.timeline}
+				{@const incOpt = optTimeline.map((t: any) => ({ value: parseFloat(t.total_monthly_income || '0'), year: t.year }))}
+				{@const incMod = modTimeline.map((t: any) => ({ value: parseFloat(t.total_monthly_income || '0'), year: t.year }))}
+				{@const incPes = pesTimeline.map((t: any) => ({ value: parseFloat(t.total_monthly_income || '0'), year: t.year }))}
+				{@const ic = computeBandChart(incOpt, incMod, incPes, 400, 120, 8, 18)}
+				<svg viewBox="0 0 400 120" class="w-full" preserveAspectRatio="xMidYMid meet" style="height:120px">
+					<defs>
+						<linearGradient id="incomeBand" x1="0" y1="0" x2="0" y2="1">
+							<stop offset="0%" stop-color="#10b981" stop-opacity="0.12" />
+							<stop offset="100%" stop-color="#f43f5e" stop-opacity="0.04" />
+						</linearGradient>
+					</defs>
+					<!-- Confidence band -->
+					<polygon points={ic.bandPolygon} fill="url(#incomeBand)" opacity="0.5" />
+					<!-- Pessimistic line -->
+					<polyline points={ic.pesLine} fill="none" stroke="#f43f5e" stroke-width="1" stroke-dasharray="4,3" opacity="0.3" />
+					<!-- Optimistic line -->
+					<polyline points={ic.optLine} fill="none" stroke="#10b981" stroke-width="1" stroke-dasharray="4,3" opacity="0.3" />
+					<!-- Moderate line (primary) -->
+					<polyline points={ic.modLine} fill="none" stroke="#10b981" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+					<!-- Goal line -->
+					{#if goalLineValue}
+						{@const goalY = ic.padding.top + ic.ch - ((goalLineValue - ic.min) / (ic.max - ic.min || 1)) * ic.ch * 0.9 - ic.ch * 0.05}
+						<line x1={ic.padding.left} y1={goalY} x2={ic.padding.left + ic.cw} y2={goalY}
+							stroke="#f59e0b" stroke-width="1" stroke-dasharray="6,4" opacity="0.6" />
+						<text x={ic.padding.left + ic.cw + 2} y={goalY + 3} fill="#f59e0b"
+							font-size="8" font-family="JetBrains Mono, monospace">Obj.</text>
+					{/if}
+					<!-- X-axis labels -->
+					<text x="{ic.padding.left}" y="120-3" fill="#71717a" font-size="7" font-family="JetBrains Mono, monospace" text-anchor="start">{firstYear?.year || ''}</text>
+					<text x="{ic.padding.left + ic.cw}" y="120-3" fill="#71717a" font-size="7" font-family="JetBrains Mono, monospace" text-anchor="end">{lastYear?.year || ''}</text>
+				</svg>
+				{#if goalLineValue}<div class="text-center mt-1"><span class="text-[9px] text-amber-400/70">Objectif: {fmt(goalLineValue)}</span></div>{/if}
+			{:else}
+				<AreaChart data={incomeChartData} height={120} color="#10b981" goalLine={goalLineValue}
+					startLabel="{fmt(firstYear?.total_monthly_income || '0')}/mois"
+					endLabel="{fmt(lastYear?.total_monthly_income || '0')}/mois"
+					showRetirementMarker={hasRetirementPhase} retirementIndex={retirementIndex > -1 ? retirementIndex : -1} />
+				{#if goalLineValue}<div class="text-center mt-1"><span class="text-[9px] text-amber-400/70">Objectif: {fmt(goalLineValue)}</span></div>{/if}
+			{/if}
 		</div>
 
 		<!-- ── Milestones ──────────────────────────────────────────────────── -->
