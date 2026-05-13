@@ -89,6 +89,8 @@ class WaterfallMonthly(BaseModel):
     charges: str
     cfe_monthly: str
     net_after_charges: str
+    autres_revenus: str = "0"  # Non-AE household income (conjoint salary, etc.)
+    spouse_charges: str = "0"  # Cotisations conjoint (AE or salarial)
     base_expenses: str
     loan_payments: str
     kid_costs: str
@@ -110,6 +112,8 @@ class WaterfallAnnual(BaseModel):
     charges: str
     cfe: str
     net_after_charges: str
+    autres_revenus: str = "0"  # Non-AE household income (conjoint salary, etc.)
+    spouse_charges: str = "0"  # Cotisations conjoint (AE or salarial)
     total_expenses: str
     total_life_costs: str
     total_income_additions: str

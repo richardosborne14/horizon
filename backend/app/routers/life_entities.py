@@ -264,9 +264,27 @@ async def update_life_entity(
     # Handle cost_events separately — they come as Pydantic CostEvent models,
     # not raw dicts after model_dump. Convert them before dumping.
     if data.cost_events is not None:
-        entity.cost_events = [
-            _cost_event_to_dict(e) for e in data.cost_events
-        ]
+        submitted_events = [_cost_event_to_dict(e) for e in data.cost_events]
+        # HOTFIX-5B: Merge default events back if they were silently dropped.
+        # Any event key from the canned defaults that is absent from the
+        # submission gets re-added (preserving its default amount). This
+        # prevents data loss when the frontend edits an entity without
+        # explicitly including all default cost events.
+        try:
+            from app.services.canned_defaults import populate_defaults
+            defaults = populate_defaults(
+                entity_type=entity.entity_type,
+                reference_date=entity.reference_date or data.reference_date,
+                metadata=data.metadata or entity.metadata_,
+            )
+            default_events = [_cost_event_to_dict(e) for e in defaults]
+            submitted_keys = {e.get("id", "") for e in submitted_events}
+            for def_evt in default_events:
+                if def_evt.get("id", "") not in submitted_keys:
+                    submitted_events.append(def_evt)
+        except Exception:
+            pass  # graceful — don't block the update if defaults can't load
+        entity.cost_events = submitted_events
 
     # Dump remaining fields (exclude cost_events since handled above)
     update_data = data.model_dump(exclude_unset=True, exclude={"cost_events"})

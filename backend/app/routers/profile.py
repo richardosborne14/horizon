@@ -429,6 +429,61 @@ async def get_waterfall(
     charges_m = _m(entry.charges)
     cfe_m = _m(entry.cfe)
     net_charges_m = gross_ca_m - charges_m - cfe_m
+
+    # ── Non-AE household income (conjoint salary, etc.) ─────────────
+    # Compute from income_sources: all non-AE, non-one-time sources
+    # regardless of earner field (covers the conjoint salary mislabel bug).
+    autres_revenus_m = Decimal("0")
+    try:
+        income_sources_raw = inp.income_sources
+    except AttributeError:
+        income_sources_raw = None
+    if income_sources_raw:
+        from app.calculations.projection import compute_income_for_year
+        total_income_all = compute_income_for_year(
+            income_sources_raw, entry.year, "user", ae_only=False,
+            current_year=inp.current_year,
+        )
+        ae_only_total = compute_income_for_year(
+            income_sources_raw, entry.year, "user", ae_only=True,
+            current_year=inp.current_year,
+        )
+        total_spouse = compute_income_for_year(
+            income_sources_raw, entry.year, "spouse",
+            current_year=inp.current_year,
+        )
+        total_spouse_ae = compute_income_for_year(
+            income_sources_raw, entry.year, "spouse", ae_only=True,
+            current_year=inp.current_year,
+        )
+        user_non_ae_annual = total_income_all - ae_only_total
+        autres_revenus_m = (
+            (user_non_ae_annual + total_spouse) / Decimal("12")
+        ).quantize(Decimal("0.01"))
+
+    # ── Spouse charges (cotisations conjoint) ─────────────────────────
+    spouse_charges_m = Decimal("0")
+    if income_sources_raw:
+        total_spouse_all_for_charges = compute_income_for_year(
+            income_sources_raw, entry.year, "spouse", ae_only=False,
+            current_year=inp.current_year,
+        )
+        total_spouse_ae_only = compute_income_for_year(
+            income_sources_raw, entry.year, "spouse", ae_only=True,
+            current_year=inp.current_year,
+        )
+        spouse_non_ae_annual = total_spouse_all_for_charges - total_spouse_ae_only
+        # Non-AE spouse income: ~23% salaried charges
+        if spouse_non_ae_annual > 0:
+            spouse_charges_m = (spouse_non_ae_annual * Decimal("0.23") / Decimal("12")).quantize(Decimal("0.01"))
+        # AE spouse income: use AE rate from projection input
+        # Fall back to user's AE activity type if spouse_ae_type is not set.
+        if total_spouse_ae_only > 0:
+            from app.calculations.ae_rates import get_ae_rate as _get_ae_rate_wf
+            ae_type_to_use = inp.spouse_ae_type or inp.ae_activity_type or "bnc_non_reglementee"
+            ae_rate_wf = _get_ae_rate_wf(ae_type_to_use, entry.year)
+            spouse_charges_m += (total_spouse_ae_only * ae_rate_wf / Decimal("12")).quantize(Decimal("0.01"))
+
     base_exp_m = _m(entry.base_expenses)
     loan_m = _m(getattr(entry, "loan_expenses", Decimal("0")))
     kid_m = _m(entry.kid_expenses)
@@ -440,7 +495,8 @@ async def get_waterfall(
     tax_m = _m(entry.tax_credits)
 
     total_expenses_m = base_exp_m + loan_m + kid_m + pet_m + car_m + tech_m + rec_m
-    disposable_m = net_charges_m - total_expenses_m + caf_m + tax_m
+    # Disposable = AE net + autres revenus - spouse charges - expenses + CAF + tax credits
+    disposable_m = net_charges_m + autres_revenus_m - spouse_charges_m - total_expenses_m + caf_m + tax_m
 
     # Savings planned from allocations
     savings_m = Decimal("0")
@@ -454,6 +510,8 @@ async def get_waterfall(
         charges=str(charges_m),
         cfe_monthly=str(cfe_m),
         net_after_charges=str(net_charges_m),
+        autres_revenus=str(autres_revenus_m),
+        spouse_charges=str(spouse_charges_m),
         base_expenses=str(base_exp_m),
         loan_payments=str(loan_m),
         kid_costs=str(kid_m),
@@ -470,6 +528,7 @@ async def get_waterfall(
 
     # ── Annual breakdown ─────────────────────────────────────────────
     net_charges_a = entry.gross_annual - entry.charges - entry.cfe
+    autres_revenus_a = autres_revenus_m * Decimal("12")
     total_expenses_a = (
         entry.base_expenses
         + getattr(entry, "loan_expenses", Decimal("0"))
@@ -486,7 +545,8 @@ async def get_waterfall(
         + entry.tech_expenses
     )
     income_additions_a = entry.caf_annual + entry.tax_credits
-    disposable_a = net_charges_a - total_expenses_a + income_additions_a
+    spouse_charges_a = spouse_charges_m * Decimal("12")
+    disposable_a = net_charges_a + autres_revenus_a - spouse_charges_a - total_expenses_a + income_additions_a
     savings_a = savings_m * Decimal("12")
     surplus_deficit_a = disposable_a - savings_a
 
@@ -495,6 +555,8 @@ async def get_waterfall(
         charges=str(entry.charges),
         cfe=str(entry.cfe),
         net_after_charges=str(net_charges_a),
+        autres_revenus=str(autres_revenus_a),
+        spouse_charges=str(spouse_charges_a),
         total_expenses=str(total_expenses_a),
         total_life_costs=str(total_life_costs_a),
         total_income_additions=str(income_additions_a),

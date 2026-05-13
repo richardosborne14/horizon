@@ -606,12 +606,18 @@
     <p class="text-[10px] text-zinc-500 mb-3">{$_('life.recurring.intro', 'Remboursements de prêt, colonies de vacances, sport enfant — ce qui revient chaque année mais a une date de fin.')}</p>
 
     {#each recurringExpenses as expense (expense.id)}
+      {#if expense.label === 'Nouvelle dépense'}
+        <div class="flex items-center gap-1.5 mb-1 ml-1" data-coco-desc="Cette dépense utilise le nom par défaut. Nommez-la pour clarifier votre budget.">
+          <span class="w-2 h-2 rounded-full bg-amber-500/70 inline-block" title="Nom par défaut — à renommer"></span>
+          <span class="text-[10px] text-amber-400/80">Cette dépense n'a pas encore été nommée. Mettez-la à jour ou supprimez-la.</span>
+        </div>
+      {/if}
       <div class="flex items-end gap-2 mb-2" data-coco-desc={`Dépense récurrente : ${expense.label || 'Sans nom'}, ${expense.annual_amount}€/an de ${expense.from_year} à ${expense.to_year}`}>
         <input
           type="text"
           placeholder="Description"
           value={expense.label}
-          class="flex-1 bg-zinc-800/40 border border-zinc-700/30 rounded px-2 py-1 text-xs text-zinc-200"
+          class="flex-1 bg-zinc-800/40 border {expense.label === 'Nouvelle dépense' ? 'border-amber-700/50' : 'border-zinc-700/30'} rounded px-2 py-1 text-xs text-zinc-200"
           on:blur={(e) => debouncedSaveRecurring(expense.id, 'label', (e.target as HTMLInputElement).value)}
         />
         <input

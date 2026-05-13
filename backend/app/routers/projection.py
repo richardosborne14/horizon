@@ -575,19 +575,76 @@ async def get_pension_estimate(
             detail="Erreur lors du calcul de la projection",
         ) from exc
 
-    # Extract CA history from the timeline (only accumulation years)
-    ca_history = [
-        t.gross_annual for t in timeline if not t.is_retirement
-    ]
+    # ── Fetch ALL career periods (user + spouse) once ─────────────
+    career_result = await db.execute(
+        select(CareerPeriod)
+        .where(
+            CareerPeriod.user_id == str(current_user.id),
+            CareerPeriod.is_active == True,
+        )
+        .order_by(CareerPeriod.start_date)
+    )
+    all_periods = career_result.scalars().all()
 
-    # Compute user pension estimate (v1 — AE-focused, unchanged)
-    user_pension = estimate_monthly_pension(
+    user_career_dicts: list[dict] = []
+    spouse_career_dicts: list[dict] = []
+    for cp in all_periods:
+        d = {
+            "period_type": cp.period_type,
+            "start_date": cp.start_date.isoformat() if cp.start_date else None,
+            "end_date": cp.end_date.isoformat() if cp.end_date else None,
+            "annual_gross": cp.annual_gross,
+            "is_full_time": cp.is_full_time,
+            "time_percentage": cp.time_percentage,
+        }
+        if cp.owner == "user":
+            user_career_dicts.append(d)
+        elif cp.owner == "spouse":
+            spouse_career_dicts.append(d)
+
+    # ── User pension (v2 career-aware) ───────────────────────────
+    # Build projected AE CA from income sources
+    user_projected_ae_ca: list[dict] = []
+    if inp.income_sources:
+        user_ae_sources = [
+            s for s in inp.income_sources
+            if s.get("earner") == "user" and s.get("is_ae_revenue", True)
+        ]
+        user_base_monthly = Decimal("0")
+        for s in user_ae_sources:
+            amt = Decimal(str(s.get("amount", "0")))
+            freq = s.get("frequency", "monthly")
+            if freq == "annual":
+                user_base_monthly += amt / Decimal("12")
+            elif freq == "monthly":
+                user_base_monthly += amt
+        user_years_to_ret = max(0, (profile.target_retirement_age or 67) - (date.today().year - profile.birth_date.year))
+        user_growth = inp.growth_rate
+        for i in range(user_years_to_ret):
+            yr = date.today().year + i
+            grown = user_base_monthly * Decimal("12") * ((Decimal("1") + user_growth) ** i)
+            user_projected_ae_ca.append({"year": yr, "ca": grown})
+
+    user_v2_raw = estimate_monthly_pension_v2(
         birth_year=birth_year,
-        activity_type=activity_type,
-        ca_history=ca_history,
-        retirement_age=profile.target_retirement_age,
+        career_periods=user_career_dicts,
+        projected_ae_ca=user_projected_ae_ca,
+        ae_activity_type=activity_type,
+        retirement_age=profile.target_retirement_age or 67,
+        current_year=date.today().year,
         inflation_rate=infl_rate,
     )
+    # Build a user_pension dict compatible with the existing response format
+    user_pension = {
+        "total_monthly": Decimal(str(user_v2_raw.get("total_monthly", "0"))).quantize(Decimal("0.01")),
+        "base_monthly": Decimal(str(user_v2_raw.get("base_salarie_monthly", user_v2_raw.get("base_monthly", "0")))).quantize(Decimal("0.01")),
+        "complementaire_monthly": Decimal(str(user_v2_raw.get("complementaire_monthly", "0"))).quantize(Decimal("0.01")),
+        "trimestres_valides": user_v2_raw.get("trimestres", {}).get("total", 0),
+        "trimestres_requis": user_v2_raw.get("trimestres", {}).get("required", get_trimestres_requis(birth_year)),
+        "taux": user_v2_raw.get("taux", Decimal("0.5")),
+        "confidence": user_v2_raw.get("confidence", "medium"),
+        "is_taux_plein": user_v2_raw.get("is_taux_plein", False),
+    }
 
     # ── Spouse pension (TASK-7.7) ──────────────────────────────────────
     spouse_pension = None
@@ -598,30 +655,7 @@ async def get_pension_estimate(
     spouse = spouse_row.scalar_one_or_none()
 
     if spouse is not None and spouse.birth_date is not None:
-        # Fetch spouse career periods
-        sp_career_result = await db.execute(
-            select(CareerPeriod)
-            .where(
-                CareerPeriod.user_id == str(current_user.id),
-                CareerPeriod.is_active == True,
-                CareerPeriod.owner == "spouse",
-            )
-            .order_by(CareerPeriod.start_date)
-        )
-        sp_periods = sp_career_result.scalars().all()
-
-        # Build career dicts for v2
-        spouse_career_dicts: list[dict] = []
-        for cp in sp_periods:
-            spouse_career_dicts.append({
-                "period_type": cp.period_type,
-                "start_date": cp.start_date.isoformat() if cp.start_date else None,
-                "end_date": cp.end_date.isoformat() if cp.end_date else None,
-                "annual_gross": cp.annual_gross,
-                "is_full_time": cp.is_full_time,
-                "time_percentage": cp.time_percentage,
-                "notes": cp.notes,
-            })
+        # Use spouse_career_dicts already collected above
 
         # Compute CC trimestres if applicable
         cc_trimestres_total = 0
@@ -634,14 +668,16 @@ async def get_pension_estimate(
             years_to_retirement = max(
                 0, profile.target_retirement_age - spouse_age
             )
-            # For each projected year, estimate CC trimestres from user's CA
+            # Reconstruct ca_history from user's projected AE CA
+            ca_history_cc: list[Dec] = [
+                d["ca"] for d in user_projected_ae_ca
+            ]
             for i in range(years_to_retirement):
-                if i < len(ca_history):
-                    projected_ca = ca_history[i]
-                elif ca_history:
-                    # Extend last CA with growth for years beyond history
-                    projected_ca = ca_history[-1] * (
-                        (Dec("1") + inp.growth_rate) ** (i - len(ca_history) + 1)
+                if i < len(ca_history_cc):
+                    projected_ca = ca_history_cc[i]
+                elif ca_history_cc:
+                    projected_ca = ca_history_cc[-1] * (
+                        (Dec("1") + inp.growth_rate) ** (i - len(ca_history_cc) + 1)
                     )
                 else:
                     projected_ca = Dec("0")
@@ -649,11 +685,40 @@ async def get_pension_estimate(
                     spouse.cc_cotisation_option, projected_ca
                 )
 
+        # Build projected AE CA from spouse income sources
+        projected_ae_ca: list[dict] = []
+        if inp.income_sources:
+            spouse_age_now = date_type.today().year - spouse.birth_date.year
+            years_to_ret = max(0, profile.target_retirement_age - spouse_age_now)
+            current_yr = date_type.today().year
+            # Get spouse growth rate from profile or default to ambitious
+            spouse_growth = inp.growth_rate  # use household growth rate
+            spouse_ae_sources = [
+                s for s in inp.income_sources
+                if s["earner"] == "spouse" and s.get("is_ae_revenue", True)
+            ]
+            # Sum base monthly AE income for spouse
+            spouse_base_monthly = Decimal("0")
+            for s in spouse_ae_sources:
+                amt = Decimal(s["amount"])
+                if s["frequency"] == "annual":
+                    spouse_base_monthly += amt / Decimal("12")
+                elif s["frequency"] == "monthly":
+                    spouse_base_monthly += amt
+            # Project forward with growth
+            for i in range(years_to_ret):
+                yr = current_yr + i
+                grown = spouse_base_monthly * Decimal("12") * ((Dec("1") + spouse_growth) ** i)
+                projected_ae_ca.append({
+                    "year": yr,
+                    "ca": grown,
+                })
+
         # Call v2 for spouse career-aware pension
         spouse_v2 = estimate_monthly_pension_v2(
             birth_year=spouse.birth_date.year,
             career_periods=spouse_career_dicts,
-            projected_ae_ca=[],  # CC handled separately below
+            projected_ae_ca=projected_ae_ca,
             ae_activity_type=spouse.ae_activity_type or "bnc_non_reglementee",
             retirement_age=profile.target_retirement_age,
             current_year=date_type.today().year,
@@ -1482,6 +1547,51 @@ async def get_lifecycle_alerts(
         "current_age": inp.current_age,
     }
 
+    # ── HOTFIX-4: Missing conjoint career history alert ──────────────
+    from app.models.career_period import CareerPeriod
+    from app.calculations.insights import LifecycleAlert
+
+    spouse_alert = None
+    # Fetch spouse record (not in scope from _assemble_input)
+    sp_row = await db.execute(
+        select(Spouse).where(Spouse.user_id == str(current_user.id))
+    )
+    sp = sp_row.scalar_one_or_none()
+    if sp is not None:
+        sp_status = sp.status or ""
+        is_salaried = sp_status in ("cdi", "fonctionnaire", "cdd")
+        if is_salaried and sp.birth_date is not None:
+            today = date.today()
+            sp_age = today.year - sp.birth_date.year
+            if 25 <= sp_age <= 62:
+                # Check if any career periods exist for spouse
+                from sqlalchemy import func as sa_func
+                sp_cp_count_result = await db.execute(
+                    select(sa_func.count(CareerPeriod.id)).where(
+                        CareerPeriod.user_id == str(current_user.id),
+                        CareerPeriod.is_active == True,
+                        CareerPeriod.owner == "spouse",
+                    )
+                )
+                sp_cp_count = sp_cp_count_result.scalar() or 0
+                if sp_cp_count == 0:
+                    spouse_alert = LifecycleAlert(
+                        id="spouse_no_career",
+                        alert_type="data_gap",
+                        year=int(today.year),
+                        age=int(inp.current_age),
+                        severity="warning",
+                        title=f"Retraite de {sp.first_name or 'votre conjoint(e)'} non estimée",
+                        description=(
+                            f"{sp.first_name or 'Votre conjoint(e)'} est enregistré(e) comme"
+                            f" salarié(e) mais aucune période de carrière n'a été saisie."
+                            f" Sa retraite n'est pas incluse dans la projection du foyer."
+                            f" Ajoutez son parcours pour voir l'impact complet."
+                        ),
+                        action_label="Ajouter le parcours",
+                        action_link="identite",
+                    )
+
     alerts = generate_lifecycle_alerts(
         timeline=timeline,
         summary={},  # summary not needed for lifecycle alerts
@@ -1507,6 +1617,20 @@ async def get_lifecycle_alerts(
         )
         for a in alerts
     ]
+
+    # HOTFIX-4: Prepend spouse career gap alert if present
+    if spouse_alert is not None:
+        alerts_out.insert(0, LifecycleAlertOut(
+            id=spouse_alert.id,
+            alert_type=spouse_alert.alert_type,
+            year=spouse_alert.year,
+            age=spouse_alert.age,
+            severity=spouse_alert.severity,
+            title=spouse_alert.title,
+            description=spouse_alert.description,
+            action_label=spouse_alert.action_label,
+            action_link=spouse_alert.action_link,
+        ))
 
     return LifecycleAlertsResponse(alerts=alerts_out, total=len(alerts_out))
 

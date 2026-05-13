@@ -153,25 +153,52 @@
 		} catch { /* ignore */ }
 	}
 
+	// ── Growth rate computation (MUST be above timeline — used by buildTimeline) ─
+	$: effectiveRate = profile.growth_preset === 'custom'
+		? Number(profile.growth_rate_custom) || 0.03
+		: (growthPresets[profile.growth_preset]?.rate
+			? parseFloat(growthPresets[profile.growth_preset].rate)
+			: 0.03);
+
 	// ── 10-year timeline ────────────────────────────────────────────────────
 	$: currentYear = new Date().getFullYear();
 	$: timeline = buildTimeline();
 
 	function buildTimeline(): Array<{ year: number; segments: Array<{ label: string; amount: number; color: string }>; total: number }> {
 		const result = [];
+		// Build a per-source growth rate map: per-source annual_growth_rate takes
+		// priority; AE sources with no per-source rate fall back to effectiveRate.
+		const sourceGrowthRates = new Map<string, number>();
+		for (const s of incomeSources) {
+			const perSrc = parseFloat(s.annual_growth_rate);
+			if (!isNaN(perSrc) && perSrc > 0) {
+				sourceGrowthRates.set(s.id, perSrc);
+			} else if (s.is_ae_revenue && effectiveRate > 0) {
+				sourceGrowthRates.set(s.id, effectiveRate);
+			} else {
+				sourceGrowthRates.set(s.id, 0);
+			}
+		}
+
 		for (let y = currentYear; y < currentYear + 10; y++) {
 			const yearStart = new Date(y, 0, 1);
 			const yearEnd = new Date(y, 11, 31);
+			const yearIndex = y - currentYear;
 			const segments = incomeSources
 				.filter((s: any) => s.is_active !== false)
 				.filter((s: any) => !s.start_date || new Date(s.start_date) <= yearEnd)
 				.filter((s: any) => !s.end_date || new Date(s.end_date) >= yearStart)
 				.filter((s: any) => s.frequency !== 'one_time')
-				.map((s: any) => ({
-					label: s.label || '—',
-					amount: s.frequency === 'annual' ? (parseFloat(s.amount) || 0) / 12 : (parseFloat(s.amount) || 0),
-					color: s.earner === 'spouse' ? 'purple' : 'teal',
-				}));
+				.map((s: any) => {
+					const baseAmount = s.frequency === 'annual' ? (parseFloat(s.amount) || 0) / 12 : (parseFloat(s.amount) || 0);
+					const growth = sourceGrowthRates.get(s.id) ?? 0;
+					const grown = baseAmount * Math.pow(1 + growth, yearIndex);
+					return {
+						label: s.label || '—',
+						amount: grown,
+						color: s.earner === 'spouse' ? 'purple' : 'teal',
+					};
+				});
 			const total = segments.reduce((s: number, x: any) => s + x.amount, 0);
 			result.push({ year: y, segments, total });
 		}
@@ -180,13 +207,7 @@
 
 	$: maxMonthly = Math.max(1, ...timeline.map(t => t.total));
 
-	// ── Growth rate for 5-year preview ──────────────────────────────────────
-	$: effectiveRate = profile.growth_preset === 'custom'
-		? Number(profile.growth_rate_custom) || 0.03
-		: (growthPresets[profile.growth_preset]?.rate
-			? parseFloat(growthPresets[profile.growth_preset].rate)
-			: 0.03);
-
+	// ── 5-year preview ──────────────────────────────────────────────────────
 	$: fiveYearPreview = Array.from({ length: 5 }, (_, i) =>
 		Math.round(stats.grossMonthly * Math.pow(1 + effectiveRate, i) * 100) / 100
 	);
@@ -647,6 +668,28 @@
 					<div class="flex-1 h-1 bg-teal-500/20 rounded-full"></div>
 					<span class="text-[11px] font-mono font-bold text-teal-300 w-24 text-right">{fmtDec(parseFloat(waterfall.monthly.net_after_charges))}</span>
 				</div>
+
+				<!-- Autres revenus (conjoint, non-AE) -->
+				{#if parseFloat(waterfall.monthly.autres_revenus) > 0}
+					<div class="flex items-center gap-2">
+						<span class="text-[10px] text-zinc-400 w-28 text-right">Autres revenus</span>
+						<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+							<div class="h-full bg-teal-500/40 rounded" style="width: {Math.min(100, (parseFloat(waterfall.monthly.autres_revenus) / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+						</div>
+						<span class="text-[11px] font-mono text-teal-300 w-24 text-right">+{fmtDec(parseFloat(waterfall.monthly.autres_revenus))}</span>
+					</div>
+				{/if}
+
+				<!-- Spouse charges (cotisations conjoint) -->
+				{#if parseFloat(waterfall.monthly.spouse_charges) > 0}
+					<div class="flex items-center gap-2">
+						<span class="text-[10px] text-zinc-400 w-28 text-right">Cotisations conjoint</span>
+						<div class="flex-1 h-4 bg-zinc-800 rounded overflow-hidden">
+							<div class="h-full bg-rose-400/30 rounded ml-auto" style="width: {Math.min(100, (parseFloat(waterfall.monthly.spouse_charges) / Math.max(1, parseFloat(waterfall.monthly.gross_ca))) * 100)}%"></div>
+						</div>
+						<span class="text-[11px] font-mono text-rose-400 w-24 text-right">-{fmtDec(parseFloat(waterfall.monthly.spouse_charges))}</span>
+					</div>
+				{/if}
 
 				<!-- Base expenses -->
 				<div class="flex items-center gap-2">

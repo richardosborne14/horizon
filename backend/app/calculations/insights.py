@@ -721,7 +721,8 @@ def generate_lifecycle_alerts(
 
         from app.calculations.vehicles import VEHICLE_SPECS
         spec = VEHICLE_SPECS.get(vehicle_key, {})
-        ceiling = Decimal(str(spec.get("ceiling", 0)))
+        ceiling_raw = spec.get("ceiling")
+        ceiling = Decimal(str(ceiling_raw)) if ceiling_raw is not None else Decimal("0")
         if ceiling <= Decimal("0"):
             continue
 

@@ -727,7 +727,7 @@
 						<th class="py-1 text-left">An</th><th class="py-1 text-right">Âge</th><th class="py-1 text-right">CA brut</th>
 						<th class="py-1 text-right">Cotis.</th><th class="py-1 text-right">Cotis.%</th><th class="py-1 text-right">Vie</th>
 						<th class="py-1 text-right">Enfants</th><th class="py-1 text-right">Projets</th><th class="py-1 text-right">Net</th>
-						<th class="py-1 text-right">Patrimoine</th><th class="py-1 text-right">Passif/mois</th>
+						<th class="py-1 text-right">Patrimoine</th><th class="py-1 text-right">Retraite/mois</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -745,7 +745,7 @@
 							</td>
 							<td class="py-1 font-mono text-right font-medium {parseFloat(t.net_annual) >= 0 ? 'text-teal-400' : 'text-rose-400'}">{fmtK(t.net_annual)}</td>
 							<td class="py-1 font-mono font-bold text-white text-right">{fmtK(t.total_wealth)}</td>
-							<td class="py-1 font-mono text-emerald-400 text-right">{fmt(t.passive_monthly)}</td>
+							<td class="py-1 font-mono text-emerald-400 text-right">{fmt(parseFloat(t.pension_monthly || '0') + parseFloat(t.passive_monthly || '0'))}</td>
 						</tr>
 					{/each}
 				</tbody>

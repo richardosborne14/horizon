@@ -29,6 +29,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_user
 from app.models.income_source import IncomeSource
 from app.models.profile import UserProfile
+from app.models.spouse import Spouse
 from app.models.user import User
 from app.schemas.income_source import (
     IncomeSourceCreate,
@@ -37,6 +38,81 @@ from app.schemas.income_source import (
     IncomeSourceSummaryResponse,
     EarnersSummary,
 )
+
+async def sync_spouse_income(user_id: UUID, db: AsyncSession) -> None:
+    """Sync spouses.monthly_gross_income from active spouse-earner non-AE sources.
+
+    Sums all active monthly+annual sources where earner='spouse'
+    and is_ae_revenue=False (salaried income). Annual sources divided by 12.
+    One-time sources excluded.
+
+    This keeps the spouses table in sync with income_sources for the
+    projection engine's spouse_charges calculation.
+
+    Args:
+        user_id: The user's UUID.
+        db: Async database session.
+    """
+    # Check if a spouse record exists
+    spouse_result = await db.execute(
+        select(Spouse).where(Spouse.user_id == user_id)
+    )
+    spouse = spouse_result.scalar_one_or_none()
+    if spouse is None:
+        return
+
+    # Sum monthly non-AE spouse sources
+    monthly_result = await db.execute(
+        select(func.coalesce(func.sum(IncomeSource.amount), Decimal("0")))
+        .where(IncomeSource.user_id == user_id)
+        .where(IncomeSource.earner == "spouse")
+        .where(IncomeSource.is_ae_revenue == False)
+        .where(IncomeSource.is_active == True)
+        .where(IncomeSource.frequency == "monthly")
+        .where(
+            or_(
+                IncomeSource.start_date == None,
+                IncomeSource.start_date <= func.current_date(),
+            )
+        )
+        .where(
+            or_(
+                IncomeSource.end_date == None,
+                IncomeSource.end_date > func.current_date(),
+            )
+        )
+    )
+    monthly_total = monthly_result.scalar() or Decimal("0")
+
+    # Sum annual non-AE spouse sources (divide by 12)
+    annual_result = await db.execute(
+        select(func.coalesce(func.sum(IncomeSource.amount), Decimal("0")))
+        .where(IncomeSource.user_id == user_id)
+        .where(IncomeSource.earner == "spouse")
+        .where(IncomeSource.is_ae_revenue == False)
+        .where(IncomeSource.is_active == True)
+        .where(IncomeSource.frequency == "annual")
+        .where(
+            or_(
+                IncomeSource.start_date == None,
+                IncomeSource.start_date <= func.current_date(),
+            )
+        )
+        .where(
+            or_(
+                IncomeSource.end_date == None,
+                IncomeSource.end_date > func.current_date(),
+            )
+        )
+    )
+    annual_total = annual_result.scalar() or Decimal("0")
+    monthly_from_annual = annual_total / Decimal("12")
+
+    total = (monthly_total + monthly_from_annual).quantize(Decimal("0.01"))
+
+    spouse.monthly_gross_income = total
+    await db.commit()
+
 
 router = APIRouter(prefix="/income-sources", tags=["income_sources"])
 
@@ -437,8 +513,9 @@ async def create_income_source(
     await db.commit()
     await db.refresh(source)
 
-    # Sync profile CA
+    # Sync profile CA and spouse income
     await sync_profile_ca(current_user.id, db)
+    await sync_spouse_income(current_user.id, db)
 
     return _source_to_read(source)
 
@@ -478,8 +555,9 @@ async def update_income_source(
     await db.commit()
     await db.refresh(source)
 
-    # Sync profile CA
+    # Sync profile CA and spouse income
     await sync_profile_ca(current_user.id, db)
+    await sync_spouse_income(current_user.id, db)
 
     return _source_to_read(source)
 
@@ -508,7 +586,8 @@ async def delete_income_source(
     source.is_active = False
     await db.commit()
 
-    # Sync profile CA after source removal
+    # Sync profile CA and spouse income after source removal
     await sync_profile_ca(current_user.id, db)
+    await sync_spouse_income(current_user.id, db)
 
     return None

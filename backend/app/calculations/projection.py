@@ -324,17 +324,20 @@ def _compute_accumulation_year(
         user_ae_income = compute_income_for_year(
             inp.income_sources, year, "user", ae_only=True,
             current_year=inp.current_year,
+            growth_rate=inp.growth_rate,
         )
         user_non_ae_income = (
             compute_income_for_year(
                 inp.income_sources, year, "user", ae_only=False,
                 current_year=inp.current_year,
+                growth_rate=Decimal("0"),
             )
             - user_ae_income
         )
         spouse_income = compute_income_for_year(
             inp.income_sources, year, "spouse",
             current_year=inp.current_year,
+            growth_rate=Decimal("0"),
         )
         onetime = compute_onetime_income_for_year(
             inp.income_sources, year,
@@ -1229,9 +1232,13 @@ def compute_summary(
             first_ret.total_income - first_ret.total_outgoing
         ) / Decimal("12")
 
+    # Include property value in total wealth (not just investments)
+    peak_property = Decimal(peak.property_value) if hasattr(peak, "property_value") and peak.property_value else Decimal("0")
+    peak_total_wealth = Decimal(peak.total_wealth) + peak_property
+
     return {
         "years": len(timeline),
-        "final_wealth": str(peak.total_wealth),
+        "final_wealth": str(peak_total_wealth.quantize(Decimal("0.01"))),
         "final_passive_monthly": str(peak.passive_monthly),
         "total_invested": str(total_invested.quantize(Decimal("0.01"))),
         "total_returns": str(total_returns.quantize(Decimal("0.01"))),
@@ -1287,6 +1294,7 @@ def compute_income_for_year(
     earner: str,
     ae_only: bool = False,
     current_year: int = 2026,
+    growth_rate: Decimal = Decimal("0"),
 ) -> Decimal:
     """Sum active income sources for a given year and earner.
 
@@ -1298,6 +1306,8 @@ def compute_income_for_year(
         earner: "user" or "spouse".
         ae_only: If True, only include is_ae_revenue=True sources.
         current_year: The current year (for growth indexing).
+        growth_rate: Global AE growth rate to apply when a source has
+            no per-source annual_growth_rate. Only applied to AE sources.
 
     Returns:
         Annual income from matching sources.
@@ -1322,8 +1332,18 @@ def compute_income_for_year(
             continue
 
         amount = Decimal(str(src.get("amount", "0")))
-        # Apply growth from source start
-        growth = Decimal(str(src.get("annual_growth_rate") or "0"))
+        # Apply growth from source start.
+        # Per-source annual_growth_rate takes priority.
+        # For AE sources with no per-source growth, fall back to the
+        # global growth_rate (from the user's growth_preset).
+        per_source_growth = Decimal(str(src.get("annual_growth_rate") or "0"))
+        is_ae = src.get("is_ae_revenue", True)
+        if per_source_growth > 0:
+            growth = per_source_growth
+        elif is_ae and growth_rate > 0:
+            growth = growth_rate
+        else:
+            growth = Decimal("0")
         years_active = max(0, year - max(start_year, current_year))
         grown = amount * ((Decimal("1") + growth) ** years_active)
 
