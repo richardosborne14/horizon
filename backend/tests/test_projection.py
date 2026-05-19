@@ -83,11 +83,11 @@ class TestScenarioABareMinimum:
         # gross_annual = 3000 * 12 = 36000
         _approx(Decimal("36000"), t.gross_annual)
 
-        # ae_rate for 2026 BNC = 0.262
+        # ae_rate for 2026 BNC = 0.256 (decree n°2025-943)
         expected_rate = get_ae_rate("bnc_non_reglementee", 2026)
         assert t.ae_rate == expected_rate
-        # charges = 36000 * 0.262 = 9432.00
-        _approx(Decimal("9432"), t.charges)
+        # charges = 36000 * 0.256 = 9216.00
+        _approx(Decimal("9216"), t.charges)
 
         # cfe estimate for 2026 = 300.00
         _approx(Decimal("300"), t.cfe)
@@ -107,23 +107,33 @@ class TestScenarioABareMinimum:
 
         # total_income = gross = 36000
         _approx(Decimal("36000"), t.total_income)
-        # total_outgoing = charges + cfe + IR = 9432 + 300 + 1371.26 = 11103.26
+        # total_outgoing = charges + cfe + IR = 9216 + 300 + IR
         # IR: BNC 36000, abattement 34% → 23760 taxable, 1 part → IR ~1371.26
-        _approx(Decimal("11103"), t.total_outgoing, Decimal("2"))
-        # net = 36000 - 11103.26 = 24896.74
-        _approx(Decimal("24897"), t.net_annual, Decimal("2"))
+        _approx(Decimal("10887"), t.total_outgoing, Decimal("2"))
+        # net = 36000 - charges - cfe - IR
+        _approx(Decimal("25113"), t.net_annual, Decimal("2"))
         # IR fields should be populated
         _approx(Decimal("1371.26"), t.ir_annual, Decimal("1"))
         _approx(Decimal("114.27"), t.ir_monthly, Decimal("0.5"))
         assert t.taux_effectif_ir > Decimal("0")
 
-        # No investments
-        _approx_zero(t.year_invested)
-        _approx_zero(t.year_returns)
-        _approx_zero(t.total_wealth)
-        _approx_zero(t.passive_monthly)
-        # total_monthly_income = 36000/12 = 3000
-        _approx(Decimal("3000"), t.total_monthly_income)
+        # Surplus now accumulates in savings_unallocated bucket (AUDIT-8.2.1 fix).
+        # year_invested = full net surplus (was 0 before fix — wealth sink bug).
+        assert t.year_invested > 0, (
+            "AUDIT-8.2.1: year-0 surplus must be invested, not discarded"
+        )
+        assert t.total_wealth > 0, (
+            "AUDIT-8.2.1: surplus accumulates in savings_unallocated bucket"
+        )
+        assert t.passive_monthly >= Decimal("0")
+        # total_monthly_income = (gross/12) + passive_monthly.
+        # With ~25k surplus now in unallocated bucket, passive ≈ 83€/month.
+        # So total_monthly_income ≈ 3083. Use tolerance of 150 to allow for
+        # interest rate variation across scales.
+        assert t.total_monthly_income >= Decimal("3000"), (
+            f"total_monthly_income {t.total_monthly_income} should be at least 3000"
+        )
+        _approx(Decimal("3000"), t.total_monthly_income, Decimal("150"))
 
         assert t.goal_reached is False
 
@@ -139,13 +149,13 @@ class TestScenarioABareMinimum:
         # Gross unchanged (no growth)
         _approx(Decimal("36000"), t.gross_annual)
 
-        # AE rate should be from 2030 bucket: 0.285 for BNC
+        # AE rate for 2031: 0.256 (stable from 2026 per decree n°2025-943)
         expected_rate = get_ae_rate("bnc_non_reglementee", 2031)
         assert t.ae_rate == expected_rate
-        assert expected_rate == Decimal("0.285")  # 2030+ rate
+        assert expected_rate == Decimal("0.256")
 
-        # charges = 36000 * 0.285 = 10260
-        _approx(Decimal("10260"), t.charges)
+        # charges = 36000 * 0.256 = 9216
+        _approx(Decimal("9216"), t.charges)
 
         # CFE inflates at 2.5% over 5 years: 300 * 1.025^5
         expected_cfe = get_cfe_estimate(2031, Decimal("0.025"))
@@ -154,11 +164,14 @@ class TestScenarioABareMinimum:
         # Base expenses = 0 (no expenses set)
         _approx_zero(t.base_expenses)
 
-        # No wealth
-        _approx_zero(t.total_wealth)
+        # AUDIT-8.2.1: surplus accumulates in unallocated bucket → non-zero wealth by year 5.
+        # Scenario A has zero expenses, so net ≈ 25k/year → significant accumulation.
+        assert t.total_wealth > 0, (
+            "AUDIT-8.2.1: even with no allocations, surplus should accumulate"
+        )
 
     def test_year_29_values(self):
-        """Year 29 (2055, age 69): final year before retirement."""
+        """Year 29 (2055, age 69): final accumulation year before retirement."""
         inp = _scenario_a_input()
         timeline = project_timeline(inp)
         t = timeline[29]
@@ -166,43 +179,52 @@ class TestScenarioABareMinimum:
         assert t.year == 2055
         assert t.age == 69
 
-        # Gross unchanged (no growth) — AE takes 29.5%
+        # Gross unchanged (no growth)
         _approx(Decimal("36000"), t.gross_annual)
 
-        # AE rate: 2055 >= 2035, so 0.295
+        # AE rate stable at 0.256 from 2026 per decree n°2025-943
         expected_rate = get_ae_rate("bnc_non_reglementee", 2055)
-        assert expected_rate == Decimal("0.295")
+        assert expected_rate == Decimal("0.256")
 
         # CFE after 29 years of 2.5% inflation
         expected_cfe = get_cfe_estimate(2055, Decimal("0.025"))
         _approx(expected_cfe, t.cfe)
 
-        # Wealth should still be zero
-        _approx_zero(t.total_wealth)
-        _approx_zero(t.passive_monthly)
+        # AUDIT-8.2.1: with 30 years of ~25k/year surplus compounding at 1.5%,
+        # wealth should be significant (the audit showed ~937k for this profile).
+        assert t.total_wealth > Decimal("500000"), (
+            f"Expected >500k wealth at year 29, got {t.total_wealth}"
+        )
+        assert t.passive_monthly > 0
 
     def test_ae_rate_changes_over_time(self):
-        """Verify AE rate increases from 0.262 to 0.295 over the timeline."""
+        """Verify AE rate changes from 0.256 (2026+) per decree n°2025-943."""
         inp = _scenario_a_input()
         timeline = project_timeline(inp)
 
-        # year 0=2026: rate 0.262
-        assert timeline[0].ae_rate == Decimal("0.262")
-        # year 1=2027: rate 0.268
-        assert timeline[1].ae_rate == Decimal("0.268")
-        # year 2=2028: rate 0.275
-        assert timeline[2].ae_rate == Decimal("0.275")
-        # year 4=2030: rate 0.285 (2030 bucket)
-        assert timeline[4].ae_rate == Decimal("0.285")
-        # year 9=2035: rate 0.295 (2035 bucket)
-        assert timeline[9].ae_rate == Decimal("0.295")
+        # year 0=2026: rate 0.256 (stable from 1 Jan 2026)
+        assert timeline[0].ae_rate == Decimal("0.256")
+        # year 1=2027: rate 0.256 (unchanged)
+        assert timeline[1].ae_rate == Decimal("0.256")
+        # year 2=2028: rate 0.256 (unchanged)
+        assert timeline[2].ae_rate == Decimal("0.256")
+        # year 4=2030: rate 0.256 (unchanged)
+        assert timeline[4].ae_rate == Decimal("0.256")
+        # year 9=2035: rate 0.256 (unchanged)
+        assert timeline[9].ae_rate == Decimal("0.256")
 
-    def test_milestones_all_none(self):
-        """With zero wealth, no milestones should be found."""
+    def test_milestones_appear_with_zero_expenses(self):
+        """Scenario A has zero expenses → significant surplus accumulates.
+
+        AUDIT-8.2.1: milestones should now appear (was previously blocked by
+        the wealth-sink bug which discarded surplus when no allocations set).
+        """
         inp = _scenario_a_input()
         timeline = project_timeline(inp)
         milestones = compute_milestones(timeline)
-        assert milestones == []
+        # With ~25k/year surplus for 30 years at 1.5%, should easily reach 100k+
+        assert len(milestones) >= 1
+        assert milestones[0]["label"] == "100k€"
 
     def test_goal_year_none(self):
         """Without a goal, find_goal_year returns None."""
@@ -210,17 +232,23 @@ class TestScenarioABareMinimum:
         timeline = project_timeline(inp)
         assert find_goal_year(timeline) is None
 
-    def test_summary_empty_wealth(self):
-        """Summary should reflect zero wealth."""
+    def test_summary_shows_wealth(self):
+        """Summary should reflect accumulated wealth for Scenario A.
+
+        AUDIT-8.2.1: Scenario A has ~25k/year surplus accumulated in the
+        savings_unallocated bucket. Summary must show non-zero final_wealth.
+        """
         inp = _scenario_a_input()
         timeline = project_timeline(inp)
         summary = compute_summary(timeline)
 
         assert summary["years"] == 30
-        assert summary["final_wealth"] in ("0", "0.00")
-        assert summary["final_passive_monthly"] in ("0", "0.00")
-        assert summary["goal_year"] is None
-        assert summary["milestones"] == []
+        assert Decimal(summary["final_wealth"]) > Decimal("500000"), (
+            f"Expected >500k final wealth, got {summary['final_wealth']}"
+        )
+        assert Decimal(summary["final_passive_monthly"]) > 0
+        assert summary["goal_year"] is None  # no goal was configured
+        assert len(summary["milestones"]) >= 1
 
     def test_raises_on_invalid_scale(self):
         """Unknown scale should raise ValueError."""

@@ -30,6 +30,7 @@ from app.calculations.expenses import preview_inflation
 from app.calculations.ae_rates import get_ae_rate
 from app.calculations.constants import INFLATION_SCALES, get_growth_rate
 from app.calculations.caf import get_caf_timeline
+from app.calculations.tax_parts import compute_auto_tax_parts
 
 router = APIRouter(prefix="/profile", tags=["profile"])
 
@@ -73,10 +74,17 @@ def _serialise(val) -> Optional[str]:
     return str(val)
 
 
-def _profile_to_read(profile: UserProfile) -> dict:
-    """Convert a UserProfile ORM object to a ProfileRead-compatible dict."""
+def _profile_to_read(
+    profile: UserProfile,
+    computed_tax_parts: Optional[float] = None,
+) -> dict:
+    """Convert a UserProfile ORM object to a ProfileRead-compatible dict.
+
+    If computed_tax_parts is provided, tax_parts_match is derived and
+    both fields are included in the response.
+    """
     age = _compute_age(profile.birth_date)
-    return {
+    result = {
         "id": profile.id,
         "user_id": profile.user_id,
         "birth_date": profile.birth_date,
@@ -103,9 +111,64 @@ def _profile_to_read(profile: UserProfile) -> dict:
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
     }
+    if computed_tax_parts is not None:
+        result["computed_tax_parts"] = computed_tax_parts
+        result["tax_parts_match"] = abs(
+            float(profile.tax_parts) - computed_tax_parts
+        ) < 0.01
+        result["tax_parts_manual_override"] = profile.tax_parts_manual_override
+    return result
 
 
 # ── Profile CRUD ────────────────────────────────────────────────────────────
+
+async def _compute_tax_parts_for_user(
+    user_id: UUID, db: AsyncSession
+) -> Optional[float]:
+    """Compute auto tax parts from spouse + life_entities data.
+
+    Returns None if we can't determine marital status (no spouse record).
+    """
+    try:
+        from app.models.life_entity import LifeEntity
+        from app.models.spouse import Spouse
+    except ImportError:
+        return None
+
+    # Get spouse for marital status
+    result = await db.execute(
+        select(Spouse).where(Spouse.user_id == user_id)
+    )
+    spouse = result.scalar_one_or_none()
+
+    marital_status = "single"
+    if spouse:
+        if spouse.relationship_type in ("married", "pacsed"):
+            marital_status = "married" if spouse.relationship_type == "married" else "pacs"
+        elif spouse.relationship_type == "concubinage":
+            marital_status = "single"
+
+    # Get dependent children
+    result = await db.execute(
+        select(LifeEntity).where(
+            LifeEntity.user_id == user_id,
+            LifeEntity.entity_type == "kid",
+            LifeEntity.is_active == True,
+        )
+    )
+    kid_entities = result.scalars().all()
+
+    kids = [
+        {
+            "birth_date": k.reference_date,
+            "is_studying": True,  # Conservative default
+        }
+        for k in kid_entities
+    ]
+
+    current_year = date.today().year
+    return compute_auto_tax_parts(marital_status, kids, current_year)
+
 
 @router.get("", response_model=ProfileRead)
 async def get_profile(
@@ -115,9 +178,12 @@ async def get_profile(
     """Return the authenticated user's profile.
 
     Creates an empty profile with defaults if one doesn't exist yet.
+    Includes computed_tax_parts and tax_parts_match when family data
+    (spouse + life_entities) is available.
     """
     profile = await _get_or_create_profile(current_user.id, db)
-    return _profile_to_read(profile)
+    computed = await _compute_tax_parts_for_user(current_user.id, db)
+    return _profile_to_read(profile, computed_tax_parts=computed)
 
 
 @router.put("", response_model=ProfileRead)
@@ -130,6 +196,10 @@ async def update_profile(
 
     Only send the fields you want to change. Fields not included
     in the request body are left unchanged.
+
+    If tax_parts is explicitly set in this request, mark
+    tax_parts_manual_override = True so auto-calculation won't
+    silently overwrite it.
     """
     profile = await _get_or_create_profile(current_user.id, db)
 
@@ -138,10 +208,15 @@ async def update_profile(
     for field, value in update_data.items():
         setattr(profile, field, value)
 
+    # If user explicitly sent tax_parts, this is a manual override
+    if "tax_parts" in update_data:
+        profile.tax_parts_manual_override = True
+
     await db.commit()
     await db.refresh(profile)
 
-    return _profile_to_read(profile)
+    computed = await _compute_tax_parts_for_user(current_user.id, db)
+    return _profile_to_read(profile, computed_tax_parts=computed)
 
 
 # ── Expenses sub-endpoints ────────────────────────────────────────────────────

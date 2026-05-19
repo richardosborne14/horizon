@@ -41,6 +41,22 @@ _DEFAULT_CURRENT_YEAR = datetime.now().year
 _DEFAULT_POST_RETIREMENT_YEARS = 25  # simulate to age 95 (retire at 70 + 25)
 _AGE_CAP = 95  # hard cap — projection never goes beyond this age
 
+# ── Surplus reinvestment constants (AUDIT-8.2.1) ─────────────────────────────
+# Fraction of net surplus to reinvest each year.
+# 1.0 = entire surplus accumulates — matches what a real saver does.
+# The previous value of 0.5 silently discarded half of every year's net and
+# was never documented or disclosed to users. It was added to give sensitivity
+# analysis some "slack" but systematically halved every user's wealth projection.
+_SURPLUS_REINVESTMENT_FRACTION = Decimal("1")
+
+# Virtual "unallocated savings" bucket used when a user has not configured any
+# investment allocations. Surplus is parked here at Livret A floor rate so the
+# Horizon page always shows a meaningful (conservative) wealth trajectory.
+# The frontend should display a nudge: "Configurez vos placements pour affiner."
+# Rate = 1.5% (Livret A, government-set since 1 Feb 2026 — Sprint 8.1 TASK-8.5).
+_UNALLOCATED_KEY = "savings_unallocated"
+_UNALLOCATED_RATE = Decimal("0.015")
+
 
 # ├─────────────────────────────────────────────────────────────────────────────
 # │ Input / Output data structures
@@ -139,6 +155,13 @@ class ProjectionInput:
     downsize_year: int | None = None                  # Year of downsizing
     downsize_target_value: Decimal = Decimal("0")     # Value of replacement property
 
+    # ── AE rate sensitivity (AUDIT-8.2.5) ───────────────────────────
+    # Annual increment applied to the AE cotisation rate (additive, not multiplicative).
+    # 0.002 = +0.2pp/year (moderate scale).
+    # The rate is capped at 0.50 to prevent absurd projections.
+    # Router sets this from AE_RATE_ANNUAL_GROWTH[scale].
+    ae_rate_annual_growth: Decimal = Decimal("0")
+
 
 @dataclass
 class YearProjection:
@@ -189,7 +212,9 @@ class YearProjection:
     # Investments
     year_invested: Decimal = Decimal("0")
     year_returns: Decimal = Decimal("0")
-    total_wealth: Decimal = Decimal("0")  # sum of all vehicle balances
+    liquid_wealth: Decimal = Decimal("0")         # investment balances only (no property)
+    total_wealth: Decimal = Decimal("0")          # liquid_wealth + property_value
+    # passive_monthly is computed from liquid_wealth, NOT total_wealth (TASK-8.2)
 
     # Income Tax (TASK-7.12)
     ir_annual: Decimal = Decimal("0")  # Impôt sur le revenu for this year
@@ -286,9 +311,12 @@ def project_timeline(inp: ProjectionInput) -> list[YearProjection]:
         )
         timeline.append(entry)
 
-        # Stop early if wealth is exhausted (cannot draw more)
-        if entry.total_wealth <= 0:
-            break
+        # AUDIT-8.2.6 #15: do NOT break early when wealth reaches zero.
+        # Continue through the full post-retirement horizon so the chart shows
+        # a flat 0 line rather than terminating mid-sequence. Users need to see
+        # the full picture — seeing wealth drop and stay at 0 for 10+ years is
+        # more impactful than the timeline just stopping. The engine handles
+        # zero balances gracefully (no withdrawals possible, returns stay at 0).
 
     return timeline
 
@@ -325,12 +353,14 @@ def _compute_accumulation_year(
             inp.income_sources, year, "user", ae_only=True,
             current_year=inp.current_year,
             growth_rate=inp.growth_rate,
+            scale=inp.scale,
         )
         user_non_ae_income = (
             compute_income_for_year(
                 inp.income_sources, year, "user", ae_only=False,
                 current_year=inp.current_year,
                 growth_rate=Decimal("0"),
+                scale=inp.scale,
             )
             - user_ae_income
         )
@@ -338,6 +368,7 @@ def _compute_accumulation_year(
             inp.income_sources, year, "spouse",
             current_year=inp.current_year,
             growth_rate=Decimal("0"),
+            scale=inp.scale,
         )
         onetime = compute_onetime_income_for_year(
             inp.income_sources, year,
@@ -354,6 +385,15 @@ def _compute_accumulation_year(
         onetime = Decimal("0")
 
     ae_rate = get_ae_rate(inp.ae_activity_type, year)
+    # AUDIT-8.2.5: apply projected annual rate growth for future years.
+    # The schedule in get_ae_rate() only covers known legislation (up to 2026).
+    # Beyond that, apply ae_rate_annual_growth × years-beyond-2026 (additive pp).
+    # Cap at 0.50 to prevent absurd out-of-range projections.
+    if inp.ae_rate_annual_growth > 0 and y > 0:
+        ae_rate = min(
+            Decimal("0.50"),
+            ae_rate + inp.ae_rate_annual_growth * Decimal(str(y)),
+        )
     charges = gross * ae_rate
     cfe = get_cfe_estimate(year, infl_rate)
 
@@ -451,21 +491,46 @@ def _compute_accumulation_year(
         inp, balances, infl_rate, infl, y=y
     )
 
-    # ── Surplus reinvestment ────────────────────────────────────────
-    # Any positive net (income - expenses - charges) that isn't already
-    # structured as a monthly allocation gets reinvested at 50% into the
-    # highest-yield available vehicle. Without this, changes to growth_rate
-    # or expenses produce zero delta in sensitivity analysis because the
-    # extra cash never reaches investments.
-    surplus_for_investment = max(Decimal("0"), net) * Decimal("0.5")
-    if surplus_for_investment > 0 and inp.allocations:
-        # Find the highest-rate existing vehicle to receive surplus
-        best_vk = max(
-            inp.allocations.keys(),
-            key=lambda k: VEHICLE_SPECS.get(k, {}).get("rate", Decimal("0")),
-        )
-        balances[best_vk] = balances.get(best_vk, Decimal("0")) + surplus_for_investment
-        year_invested += surplus_for_investment
+    # ── Compound the unallocated bucket (AUDIT-8.2.1) ───────────────
+    # _compute_investment_growth skips keys not in VEHICLE_SPECS, so we
+    # handle the virtual savings_unallocated bucket explicitly here.
+    if _UNALLOCATED_KEY in balances and balances[_UNALLOCATED_KEY] > 0:
+        _unalloc_ret = balances[_UNALLOCATED_KEY] * _UNALLOCATED_RATE
+        balances[_UNALLOCATED_KEY] += _unalloc_ret
+        year_returns += _unalloc_ret
+
+    # ── Surplus reinvestment (AUDIT-8.2.1) ──────────────────────────
+    # Full net surplus accumulates (_SURPLUS_REINVESTMENT_FRACTION = 1.0).
+    # Previously: 0.5 silently discarded half of every user's annual net.
+    # When no allocations configured, surplus parks in the virtual
+    # savings_unallocated bucket at Livret A floor (conservative floor).
+    surplus_for_investment = max(Decimal("0"), net) * _SURPLUS_REINVESTMENT_FRACTION
+    if surplus_for_investment > 0:
+        if inp.allocations:
+            # Add to the highest-yield configured vehicle.
+            # Vehicles with rates_by_scale use the current scale rate;
+            # others use spec["rate"] directly.
+            def _effective_rate_for_surplus(vk: str) -> Decimal:
+                spec = VEHICLE_SPECS.get(vk, {})
+                if "rates_by_scale" in spec:
+                    return spec["rates_by_scale"].get(
+                        inp.scale, spec["rates_by_scale"]["moderate"]
+                    )
+                return spec.get("rate", Decimal("0"))
+
+            best_vk = max(
+                inp.allocations.keys(),
+                key=_effective_rate_for_surplus,
+            )
+            balances[best_vk] = balances.get(best_vk, Decimal("0")) + surplus_for_investment
+            year_invested += surplus_for_investment
+        else:
+            # No allocations: park in virtual unallocated bucket at Livret A floor.
+            # Frontend should nudge: "Configurez vos placements pour affiner."
+            balances[_UNALLOCATED_KEY] = (
+                balances.get(_UNALLOCATED_KEY, Decimal("0")) + surplus_for_investment
+            )
+            year_invested += surplus_for_investment
 
     # ── Property appreciation and downsizing (TASK-7.16) ────────────
     current_property = Decimal("0")
@@ -501,9 +566,13 @@ def _compute_accumulation_year(
             # Update property value to replacement
             current_property = inp.downsize_target_value
 
-    wealth = sum(balances.values(), Decimal("0"))
-    passive = wealth * Decimal("0.04") / Decimal("12")
-    total_monthly = (gross + proj_inc + caf) / Decimal("12") + passive
+    liquid_wealth = sum(balances.values(), Decimal("0"))
+    total_wealth_val = liquid_wealth + current_property
+    passive = liquid_wealth * Decimal("0.04") / Decimal("12")
+    # AUDIT-8.2.3: tax_credits (CESU + charity) belong in total_monthly_income —
+    # they reduce the effective tax burden and are real cash-equivalent benefits.
+    # Previously missing → systematic ~71€/month understatement for richard's profile.
+    total_monthly = (gross + proj_inc + caf + tax_credits) / Decimal("12") + passive
 
     # Retirement-relevant monthly income excludes work salary and CAF
     # (both drop to zero at retirement). The goal is "à la retraite."
@@ -540,7 +609,8 @@ def _compute_accumulation_year(
         taux_effectif_ir=taux_effectif.quantize(Decimal("0.0001")),
         year_invested=year_invested.quantize(Decimal("0.01")),
         year_returns=year_returns.quantize(Decimal("0.01")),
-        total_wealth=wealth.quantize(Decimal("0.01")),
+        liquid_wealth=liquid_wealth.quantize(Decimal("0.01")),
+        total_wealth=total_wealth_val.quantize(Decimal("0.01")),
         passive_monthly=passive.quantize(Decimal("0.01")),
         total_monthly_income=total_monthly.quantize(Decimal("0.01")),
         goal_reached=bool(
@@ -588,6 +658,40 @@ def _compute_retirement_year(
     household_pension_monthly = pension_monthly + spouse_pension_monthly
     pension_annual = household_pension_monthly * Decimal("12")
 
+    # ── Pension income tax (TASK-8.4) ──────────────────────────────────
+    # Pensions are taxable with 10% abattement (Art. 158-5-a CGI).
+    # Min €422, max €3,812 per household — both inflated each year.
+    PENSION_ABATTEMENT_RATE = Decimal("0.10")
+    PENSION_ABATTEMENT_MIN = Decimal("422")
+    PENSION_ABATTEMENT_MAX = Decimal("3812")
+
+    if pension_annual > 0:
+        abattement_min = PENSION_ABATTEMENT_MIN * infl
+        abattement_max = PENSION_ABATTEMENT_MAX * infl
+        abattement = pension_annual * PENSION_ABATTEMENT_RATE
+        abattement = max(min(abattement, abattement_max), abattement_min)
+        pension_imposable = max(Decimal("0"), pension_annual - abattement)
+
+        ir_result = compute_ir(
+            ae_ca_annual=Decimal("0"),
+            ae_activity_type=inp.ae_activity_type,
+            salary_annual=Decimal("0"),
+            other_income_annual=pension_imposable,
+            tax_parts=inp.tax_parts,
+            cesu_credit=Decimal("0"),
+            charity_reduction=min(
+                inp.charity_annual * infl * Decimal("0.66"), Decimal("20000")
+            ),
+            has_vl=False,
+        )
+        ir_annual = Decimal(ir_result["ir_net"])
+        ir_monthly = Decimal(ir_result["monthly_ir"])
+        taux_effectif = Decimal(ir_result["taux_effectif"])
+    else:
+        ir_annual = Decimal("0")
+        ir_monthly = Decimal("0")
+        taux_effectif = Decimal("0")
+
     # ── Expenses (same structure as accumulation, minus work-related) ─
     base_exp, kid_exp, pet_exp, car_exp, tech_exp = _compute_life_entity_expenses(
         inp, y, infl
@@ -605,6 +709,7 @@ def _compute_retirement_year(
     total_outgoing = (
         base_exp + kid_exp + pet_exp + car_exp
         + tech_exp + rec_exp + proj_exp
+        + ir_annual
     )
 
     # ── Compound remaining investments (no new contributions) ────────
@@ -615,10 +720,23 @@ def _compute_retirement_year(
             continue
         spec = VEHICLE_SPECS[vk]
         bal = balances.get(vk, Decimal("0"))
-        eff_rate = max(
-            Decimal("0.005"),
-            spec["rate"] - infl_rate * Decimal("0.25"),
-        )
+
+        # ── Determine effective rate (same logic as accumulation) ──
+        if "rates_by_scale" in spec:
+            eff_rate = spec["rates_by_scale"].get(
+                inp.scale, spec["rates_by_scale"]["moderate"]
+            )
+        elif spec.get("regulated", False):
+            if inp.scale == "pessimistic":
+                eff_rate = spec["rate"]
+            else:
+                eff_rate = max(spec["rate"], infl_rate)
+        else:
+            eff_rate = max(
+                Decimal("0.005"),
+                spec["rate"] - infl_rate * Decimal("0.25"),
+            )
+
         returns = bal * eff_rate
         if spec.get("tax_free", False):
             net_ret = returns
@@ -628,6 +746,14 @@ def _compute_retirement_year(
             )
         balances[vk] = bal + net_ret  # no contributions, only returns
         year_returns += net_ret
+
+    # ── Compound the unallocated bucket in retirement (AUDIT-8.2.1) ─
+    # The retirement growth loop above skips savings_unallocated (not in
+    # VEHICLE_SPECS), so we handle it here at Livret A floor rate.
+    if _UNALLOCATED_KEY in balances and balances[_UNALLOCATED_KEY] > 0:
+        _unalloc_ret_r = balances[_UNALLOCATED_KEY] * _UNALLOCATED_RATE
+        balances[_UNALLOCATED_KEY] += _unalloc_ret_r
+        year_returns += _unalloc_ret_r
 
     # ── Tax-optimized drawdown (TASK-7.13) ───────────────────────────
     # Replaces both the 4% rule AND the simple shortfall withdrawal.
@@ -703,8 +829,9 @@ def _compute_retirement_year(
             # Update property value to replacement
             current_property = inp.downsize_target_value
 
-    # Recompute wealth after potential downsize injection
-    wealth = sum(balances.values(), Decimal("0"))
+    # Recompute liquid wealth and total wealth after potential downsize injection
+    liquid_wealth = sum(balances.values(), Decimal("0"))
+    total_wealth_val = liquid_wealth + current_property
 
     return YearProjection(
         year=year,
@@ -732,9 +859,13 @@ def _compute_retirement_year(
         total_income=total_income.quantize(Decimal("0.01")),
         total_outgoing=total_outgoing.quantize(Decimal("0.01")),
         net_annual=net.quantize(Decimal("0.01")),
+        ir_annual=ir_annual.quantize(Decimal("0.01")),
+        ir_monthly=ir_monthly.quantize(Decimal("0.01")),
+        taux_effectif_ir=taux_effectif.quantize(Decimal("0.0001")),
         year_invested=Decimal("0"),
         year_returns=year_returns.quantize(Decimal("0.01")),
-        total_wealth=wealth.quantize(Decimal("0.01")),
+        liquid_wealth=liquid_wealth.quantize(Decimal("0.01")),
+        total_wealth=total_wealth_val.quantize(Decimal("0.01")),
         passive_monthly=passive.quantize(Decimal("0.01")),
         total_monthly_income=total_monthly.quantize(Decimal("0.01")),
         goal_reached=False,
@@ -764,8 +895,11 @@ def _withdraw_from_savings(
     Returns:
         The amount actually withdrawn (may be less than needed if wealth is exhausted).
     """
-    # Withdrawal priority: liquid → less liquid
+    # Withdrawal priority: liquid → less liquid.
+    # savings_unallocated first — it is a virtual Livret A-equivalent bucket
+    # for users who haven't configured specific vehicles (AUDIT-8.2.1).
     priority = [
+        _UNALLOCATED_KEY,  # virtual bucket (no-allocation users)
         "livret_a",
         "ldds",
         "av_euro",
@@ -1022,8 +1156,16 @@ def _compute_investment_growth(
         has_existing = bal > Decimal("0")  # non-zero starting balance
         contrib = monthly * Decimal("12")
 
-        # Regulated vehicles: rate tracks inflation in non-pessimistic scales
-        if spec.get("regulated", False):
+        # ── Determine effective rate ──
+        # Vehicles with rates_by_scale (Livret A, LDDS) use government-set
+        # rates per scale, not inflation-derived. TASK-8.5.
+        if "rates_by_scale" in spec:
+            eff_rate = spec["rates_by_scale"].get(
+                inp.scale, spec["rates_by_scale"]["moderate"]
+            )
+        elif spec.get("regulated", False):
+            # Legacy regulated vehicles: rate tracks inflation
+            # (No vehicles currently use this path — kept for safety.)
             if inp.scale == "pessimistic":
                 eff_rate = spec["rate"]
             else:
@@ -1055,7 +1197,8 @@ def _compute_investment_growth(
                 else:
                     tax_rate = PFU
             elif vk in ("av_euro", "av_uc"):
-                # AV: after 8 years, PS on gains (with 4600€ abattement).
+                # AV: after 8 years, PS on gains with annual abattement
+                # (€4,600 single / €9,200 couple, Art. 125-0 A CGI). TASK-8.6.
                 # Pre-maturity: PFU (30%). Existing balance implies mature.
                 if has_existing or y >= 8:
                     tax_rate = PS_ONLY
@@ -1232,14 +1375,12 @@ def compute_summary(
             first_ret.total_income - first_ret.total_outgoing
         ) / Decimal("12")
 
-    # Include property value in total wealth (not just investments)
-    peak_property = Decimal(peak.property_value) if hasattr(peak, "property_value") and peak.property_value else Decimal("0")
-    peak_total_wealth = Decimal(peak.total_wealth) + peak_property
-
+    # TASK-8.2: total_wealth already includes property_value — no double-counting
     return {
         "years": len(timeline),
-        "final_wealth": str(peak_total_wealth.quantize(Decimal("0.01"))),
+        "final_wealth": str(peak.total_wealth),
         "final_passive_monthly": str(peak.passive_monthly),
+        "final_liquid_wealth": str(peak.liquid_wealth),
         "total_invested": str(total_invested.quantize(Decimal("0.01"))),
         "total_returns": str(total_returns.quantize(Decimal("0.01"))),
         "goal_year": find_goal_year(timeline),
@@ -1295,6 +1436,7 @@ def compute_income_for_year(
     ae_only: bool = False,
     current_year: int = 2026,
     growth_rate: Decimal = Decimal("0"),
+    scale: str = "moderate",
 ) -> Decimal:
     """Sum active income sources for a given year and earner.
 
@@ -1308,10 +1450,14 @@ def compute_income_for_year(
         current_year: The current year (for growth indexing).
         growth_rate: Global AE growth rate to apply when a source has
             no per-source annual_growth_rate. Only applied to AE sources.
+        scale: "optimistic", "moderate", or "pessimistic". Used as
+            ultimate fallback for income/salary growth rates (TASK-8.7).
 
     Returns:
         Annual income from matching sources.
     """
+    from app.calculations.constants import INCOME_GROWTH_RATES, SALARY_GROWTH_RATES
+
     total = Decimal("0")
     for src in sources:
         if src.get("earner") != earner:
@@ -1333,17 +1479,20 @@ def compute_income_for_year(
 
         amount = Decimal(str(src.get("amount", "0")))
         # Apply growth from source start.
-        # Per-source annual_growth_rate takes priority.
-        # For AE sources with no per-source growth, fall back to the
-        # global growth_rate (from the user's growth_preset).
+        # Priority chain (TASK-8.7):
+        #   1. Per-source annual_growth_rate (explicit user override)
+        #   2. Global growth_rate (from user's growth_preset on profile)
+        #   3. Scale-based INCOME_GROWTH_RATES (for AE) or SALARY_GROWTH_RATES
         per_source_growth = Decimal(str(src.get("annual_growth_rate") or "0"))
         is_ae = src.get("is_ae_revenue", True)
         if per_source_growth > 0:
             growth = per_source_growth
-        elif is_ae and growth_rate > 0:
+        elif growth_rate > 0:
             growth = growth_rate
+        elif is_ae:
+            growth = INCOME_GROWTH_RATES.get(scale, Decimal("0.02"))
         else:
-            growth = Decimal("0")
+            growth = SALARY_GROWTH_RATES.get(scale, Decimal("0.015"))
         years_active = max(0, year - max(start_year, current_year))
         grown = amount * ((Decimal("1") + growth) ** years_active)
 

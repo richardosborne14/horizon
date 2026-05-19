@@ -92,6 +92,12 @@ class CareerPeriod(Base):
     # Auto-derived from period_type if not set explicitly
     pension_regime = Column(String(20), nullable=True)
 
+    # SASU gérant type (TASK-8.8.C) — only relevant for SASU periods.
+    # "majoritaire" (>50% shares, TNS/SSI regime)
+    # "minoritaire" (<50% shares, assimilé salarié / régime général)
+    # "egal" (50/50 split)
+    sasu_gerant_type = Column(String(20), nullable=True)
+
     # Metadata
     notes = Column(String(500), nullable=True)
     sort_order = Column(Integer, nullable=False, server_default="0")

@@ -300,6 +300,20 @@ async def update_life_entity(
     if "sort_order" in update_data and update_data["sort_order"] is not None:
         entity.sort_order = update_data["sort_order"]
 
+    # ── Car entity: sync replace_cost metadata to cost events (TASK-8.11) ──
+    if entity.entity_type == "car" and entity.metadata_ and entity.cost_events:
+        new_replace_cost = entity.metadata_.get("replace_cost")
+        if new_replace_cost is not None:
+            updated = False
+            for evt in entity.cost_events:
+                if isinstance(evt, dict) and str(evt.get("id", "")).startswith("c-replace-"):
+                    evt["amount"] = float(new_replace_cost)
+                    updated = True
+            if updated:
+                # Mark the JSONB column as modified for SQLAlchemy
+                from sqlalchemy.orm.attributes import flag_modified
+                flag_modified(entity, "cost_events")
+
     await db.commit()
     await db.refresh(entity)
 

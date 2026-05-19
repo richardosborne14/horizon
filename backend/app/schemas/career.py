@@ -30,6 +30,8 @@ REGIME_MAP: dict[str, str | None] = {
     "apprenticeship": "general",
     "internship": None,          # No trimestres unless > 2 months
     "unemployment": "general",   # Trimestres validés on allocation
+    "chomage": "general",        # Chômage indemnisé (Pôle Emploi) — 1 trimestre/month
+    "stage": None,               # Paid internship — trimestres if salary qualifies
     "parental_leave": "general", # Trimestres from AVPF
     "education": None,
     "foreign": "foreign",
@@ -40,6 +42,7 @@ PeriodType = Literal[
     "cdi", "cdd", "interim", "ae", "eirl", "eurl",
     "sasu", "apprenticeship", "internship",
     "unemployment", "parental_leave",
+    "chomage", "stage",
     "education", "foreign", "other",
 ]
 
@@ -72,6 +75,11 @@ class CareerPeriodCreate(BaseModel):
     pension_regime: Optional[str] = Field(default=None, max_length=20)
     notes: Optional[str] = Field(default=None, max_length=500)
     sort_order: int = Field(default=0, ge=0)
+    sasu_gerant_type: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="SASU gérant type: 'majoritaire', 'minoritaire', or 'egal'"
+    )
 
 
 class CareerPeriodUpdate(BaseModel):
@@ -90,6 +98,11 @@ class CareerPeriodUpdate(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=500)
     sort_order: Optional[int] = Field(default=None, ge=0)
     is_active: Optional[bool] = None
+    sasu_gerant_type: Optional[str] = Field(
+        default=None,
+        max_length=20,
+        description="SASU gérant type: 'majoritaire', 'minoritaire', or 'egal'"
+    )
 
 
 class CareerPeriodRead(BaseModel):
@@ -119,6 +132,7 @@ class CareerPeriodRead(BaseModel):
     is_active: bool = True
     created_at: datetime
     updated_at: datetime
+    sasu_gerant_type: Optional[str] = None
 
     # Computed fields
     duration_years: float = 0.0

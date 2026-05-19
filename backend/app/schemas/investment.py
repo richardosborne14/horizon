@@ -32,6 +32,8 @@ class VehicleSpec(BaseModel):
     color: str
     liquidity: str
     tax_deductible: bool = False
+    informational: bool = False  # TASK-8.9: shown greyed/"Ajouter" when no allocation
+    lock_up_years: int | None = None  # TASK-8.9: e.g. PEL=4, PEE=5
 
     model_config = {"from_attributes": True}
 
@@ -90,9 +92,11 @@ class AllocationBatchItem(BaseModel):
     def check_vehicle_key(self) -> "AllocationBatchItem":
         """Validate vehicle_key against known keys."""
         if not validate_vehicle_key(self.vehicle_key):
+            from app.calculations.vehicles import VEHICLE_ORDER
+
             raise ValueError(
                 f"Invalid vehicle_key: {self.vehicle_key}. "
-                f"Must be one of: livret_a, ldds, av_euro, av_uc, pea, scpi, per"
+                f"Must be one of: {', '.join(VEHICLE_ORDER)}"
             )
         return self
 
@@ -101,7 +105,7 @@ class AllocationBatchWrite(BaseModel):
     """Batch update of multiple vehicle allocations at once."""
 
     allocations: list[AllocationBatchItem] = Field(
-        min_length=1, max_length=7, description="Allocations to update"
+        min_length=1, max_length=11, description="Allocations to update"
     )
 
 

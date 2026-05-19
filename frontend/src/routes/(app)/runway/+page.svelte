@@ -179,7 +179,9 @@
 	}
 
 	// ── Derived values ─────────────────────────────────────────────────
-	$: finalWealth = projection?.summary?.final_wealth || '0';
+	$: finalWealth = projection?.summary?.final_liquid_wealth || projection?.summary?.final_wealth || '0';
+
+	$: finalTotalWealth = projection?.summary?.final_wealth || '0';
 	$: finalPassive = projection?.summary?.final_passive_monthly || '0';
 	$: targetAge = profile?.target_retirement_age || 67;
 	$: currentAge = profile?.current_age || 0;
@@ -455,8 +457,11 @@
 		<!-- ── Hero stat cards ────────────────────────────────────────────── -->
 		<div class="grid grid-cols-2 gap-3">
 			<div class="bg-zinc-800/30 border border-zinc-800/40 rounded-xl p-4">
-				<p class="text-[9px] text-zinc-500 uppercase tracking-wider mb-1">Patrimoine à {targetAge} ans ({lastYear?.year || '—'})</p>
+				<p class="text-[9px] text-zinc-500 uppercase tracking-wider mb-1">Épargne liquide à {targetAge} ans</p>
 				<p class="text-2xl font-bold text-teal-400 font-mono">{fmtK(finalWealth)}</p>
+				{#if finalTotalWealth && finalTotalWealth !== finalWealth}
+					<p class="text-[9px] text-zinc-600 mt-0.5">+ {fmtK(parseFloat(finalTotalWealth) - parseFloat(finalWealth))} immobilier = {fmtK(finalTotalWealth)} total</p>
+				{/if}
 			</div>
 			<div class="bg-emerald-950/10 border border-emerald-900/20 rounded-xl p-4">
 				<p class="text-[9px] text-zinc-500 uppercase tracking-wider mb-1">Revenu passif mensuel</p>
@@ -725,7 +730,7 @@
 				<thead>
 					<tr class="border-b border-zinc-800 text-[9px] uppercase text-zinc-500">
 						<th class="py-1 text-left">An</th><th class="py-1 text-right">Âge</th><th class="py-1 text-right">CA brut</th>
-						<th class="py-1 text-right">Cotis.</th><th class="py-1 text-right">Cotis.%</th><th class="py-1 text-right">Vie</th>
+						<th class="py-1 text-right" title="Cotisations URSSAF + CFE">Cotis.+CFE</th><th class="py-1 text-right">Cotis.%</th><th class="py-1 text-right">Vie</th>
 						<th class="py-1 text-right">Enfants</th><th class="py-1 text-right">Projets</th><th class="py-1 text-right">Net</th>
 						<th class="py-1 text-right">Patrimoine</th><th class="py-1 text-right">Retraite/mois</th>
 					</tr>
@@ -736,7 +741,7 @@
 							<td class="py-1 font-mono text-teal-400 underline decoration-dotted">{t.year}</td>
 							<td class="py-1 font-mono text-zinc-300 text-right">{t.age}</td>
 							<td class="py-1 font-mono text-zinc-300 text-right">{fmtK(t.gross_annual)}</td>
-							<td class="py-1 font-mono text-rose-400/70 text-right">{fmtK(t.charges)}</td>
+							<td class="py-1 font-mono text-rose-400/70 text-right" title="URSSAF {fmtK(t.charges)} + CFE {fmtK(t.cfe)}">{fmtK(String(parseFloat(t.charges || '0') + parseFloat(t.cfe || '0')))}</td>
 							<td class="py-1 font-mono text-rose-400/50 text-right">{fmtPct(t.ae_rate)}</td>
 							<td class="py-1 font-mono text-amber-400/70 text-right">{fmtK(t.base_expenses)}</td>
 							<td class="py-1 font-mono text-purple-400/70 text-right">{parseFloat(t.kid_expenses) > 0 ? fmtK(t.kid_expenses) : '—'}</td>

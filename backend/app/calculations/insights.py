@@ -158,8 +158,12 @@ def _check_wealth_exhaustion(
         if getattr(t, "age", 0) <= exhaustion_age
     )) or Decimal("1")
 
-    # Approx extra monthly needed during working years to fill this gap
-    working_years = max(1, getattr(timeline[0], "age", 40) - 1)  # roughly
+    # Approx extra monthly savings needed during working years to fill this gap.
+    # AUDIT-8.2.3 fix: use (retirement_year - current_year) NOT (current_age - 1).
+    # The old formula gave 38 years for a 39-year-old, vastly overstating savings time.
+    current_year_val = getattr(timeline[0], "year", 0)
+    retirement_year_val = getattr(timeline[retirement_start_idx], "year", current_year_val + 28)
+    working_years = max(1, retirement_year_val - current_year_val)
     extra_monthly = total_needed / Decimal(str(max(1, working_years * 12)))
     # Impact is the total needed
     impact_wealth = -total_needed
@@ -752,6 +756,63 @@ def generate_lifecycle_alerts(
                     action_link="epargne",
                 )
             )
+
+    # ── AE BNC ceiling breach (TASK-8.3) ─────────────────────────────
+    # 83,600 €/year ceiling for micro-BNC prestations de services (2026-2028).
+    # When projected CA exceeds this, the user must switch to régime réel.
+    AE_BNC_CEILING_BASE = Decimal("83600")
+    ae_breach_year = None
+    ae_breach_age = None
+    for entry in timeline:
+        gross = getattr(entry, "gross_annual", Decimal("0"))
+        if gross <= 0:
+            continue
+        # Inflate ceiling at moderate rate from 2026
+        years_from_2026 = max(0, entry.year - 2026)
+        ceiling = AE_BNC_CEILING_BASE * ((Decimal("1") + Decimal("0.025")) ** years_from_2026)
+        if gross > ceiling:
+            ae_breach_year = entry.year
+            ae_breach_age = getattr(entry, "age", 0)
+            excess = gross - ceiling
+            alerts.append(
+                LifecycleAlert(
+                    id=f"ae_ceiling_{entry.year}",
+                    alert_type="ae_ceiling",
+                    year=entry.year,
+                    age=getattr(entry, "age", 0),
+                    severity="warning",
+                    title="Plafond micro-entreprise dépassé",
+                    description=(
+                        f"En {entry.year}, votre CA projeté ({_fmt_euro(gross)}) dépassera "
+                        f"le plafond micro-BNC ({_fmt_euro(ceiling)}). "
+                        f"Vous devrez basculer en EI réel, EURL ou SASU. "
+                        f"Les cotisations et la fiscalité seront différentes."
+                    ),
+                    action_label="Voir les statuts juridiques",
+                    action_link="identite",
+                )
+            )
+            # Early warning 2 years before
+            early_warning_year = entry.year - 2
+            if early_warning_year > current_year:
+                alerts.append(
+                    LifecycleAlert(
+                        id=f"ae_ceiling_early_{entry.year}",
+                        alert_type="ae_ceiling",
+                        year=early_warning_year,
+                        age=getattr(entry, "age", 0) - 2,
+                        severity="info",
+                        title="Plafond micro-entreprise approche",
+                        description=(
+                            f"D'ici 2 ans ({entry.year}), votre CA projeté pourrait "
+                            f"dépasser le plafond micro-BNC. "
+                            f"Anticipez un changement de régime juridique."
+                        ),
+                        action_label="Voir les statuts juridiques",
+                        action_link="identite",
+                    )
+                )
+            break  # Only first breach year
 
     # ── Retirement countdown (10, 5, 3, 1 years) ─────────────────────
     target_age = profile_data.get("target_age", 65)

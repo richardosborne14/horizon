@@ -197,6 +197,11 @@
 		await immediateSave('tax_parts', newParts);
 	}
 
+	async function applyComputedParts(computedParts: number) {
+		profile.tax_parts = computedParts;
+		await immediateSave('tax_parts', computedParts);
+	}
+
 	// ── Net Worth / Property (TASK-7.16) ──────────────────────────────────
 	let netWorthSaveTimer: ReturnType<typeof setTimeout>;
 
@@ -210,7 +215,9 @@
 					cash_current_accounts: netWorth.cash_current_accounts ?? 0,
 					cash_savings_other: netWorth.cash_savings_other ?? 0,
 					property_primary_value: netWorth.property_primary_value ?? 0,
+					residence_type: netWorth.residence_type ?? 'primary_residence',
 					property_other_value: netWorth.property_other_value ?? 0,
+					property_other_type: netWorth.property_other_type ?? 'none',
 					property_appreciation_rate: netWorth.property_appreciation_rate ?? 0.02,
 					downsize_enabled: netWorth.downsize_enabled ?? false,
 					downsize_year: netWorth.downsize_enabled ? (netWorth.downsize_year || null) : null,
@@ -498,14 +505,29 @@
 			</label>
 		</div>
 
-		<!-- Tax parts prompt when spouse is married/PACSed and parts < 2 -->
-		{#if spouse && ['married', 'pacsed'].includes(spouse.relationship_type) && (profile.tax_parts ?? 1) < 2}
-			<div class="bg-amber-950/20 border border-amber-800/30 rounded-lg p-3 mt-3">
-				<p class="text-xs text-amber-300">
-					Vos parts fiscales sont à {profile.tax_parts ?? '1'}. Pour un couple {spouse.relationship_type === 'married' ? 'marié' : 'PACSé'}, c'est généralement 2.0 (+0.5/enfant, +1 au 3ème).
-					<button onclick={() => updateTaxParts(2)} class="text-amber-200 underline ml-1">Mettre à jour →</button>
-				</p>
-			</div>
+		<!-- Auto-calculated tax parts banner (TASK-8.1) -->
+		{#if profile.computed_tax_parts != null}
+			{#if !profile.tax_parts_match}
+				<div class="bg-amber-950/20 border border-amber-800/30 rounded-lg p-3 mt-3">
+					<p class="text-xs text-amber-300">
+						⚠️ Votre quotient familial entré ({profile.tax_parts}) semble différent
+						du calcul automatique ({profile.computed_tax_parts} parts)
+						fondé sur votre situation familiale (couple {spouse?.relationship_type === "married" ? "marié" : "PACSé"} + enfants).
+					</p>
+					<button
+						onclick={() => applyComputedParts(profile.computed_tax_parts)}
+						class="mt-1.5 px-3 py-1 bg-amber-700/40 hover:bg-amber-700/60 text-amber-200 text-xs rounded border border-amber-600/30 transition-colors"
+						data-coco-desc="Appliquer le quotient familial calculé automatiquement">
+						Utiliser {profile.computed_tax_parts} parts
+					</button>
+				</div>
+			{:else}
+				<div class="bg-emerald-950/20 border border-emerald-800/20 rounded-lg p-2 mt-3">
+					<p class="text-[10px] text-emerald-400">
+						✓ Quotient familial cohérent avec votre situation familiale ({profile.computed_tax_parts} parts).
+					</p>
+				</div>
+			{/if}
 		{/if}
 	</Card>
 
@@ -785,8 +807,12 @@
 		{/if}
 	</Card>
 
-	<!-- Card 5: Résidence principale (TASK-7.16) -->
+	<!-- Card 5: Résidence principale (TASK-7.16 / TASK-8.10) -->
 	<Card title="Résidence principale" icon="🏠" accent="emerald" dataCocoDesc="Valeur estimée de votre résidence principale, appréciation annuelle et simulation de downsizing">
+		<div class="text-[10px] text-zinc-500 bg-zinc-900/40 rounded-lg p-2 mb-3">
+			ℹ️ Votre résidence principale ne génère pas de revenus — elle n'est pas incluse dans le calcul du revenu passif (règle des 4 %).
+		</div>
+
 		<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 			<label class="flex flex-col gap-1.5">
 				<span class="text-[11px] text-zinc-400 font-medium">Valeur estimée</span>
@@ -891,6 +917,60 @@
 					<span class="text-zinc-500 ml-1">(après frais de vente ~8% et frais de notaire ~8%)</span>
 				</div>
 			{/if}
+		{/if}
+	</Card>
+
+	<!-- Card 5b: Autres biens immobiliers (TASK-8.10) -->
+	<Card title="Autres biens immobiliers" icon="🏘️" accent="sky" dataCocoDesc="Valeur et type de vos autres biens immobiliers : résidence secondaire, locatif, terrain">
+		<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+			<label class="flex flex-col gap-1.5">
+				<span class="text-[11px] text-zinc-400 font-medium">Valeur estimée</span>
+				<input
+					type="number"
+					min="0"
+					step="10000"
+					value={netWorth?.property_other_value ?? ''}
+					oninput={(e) => {
+						if (!netWorth) netWorth = {};
+						netWorth.property_other_value = parseInt((e.target as HTMLInputElement).value) || 0;
+					}}
+					onchange={saveNetWorth}
+					class="bg-zinc-900/60 border border-zinc-700/40 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-sky-500/60 focus:ring-1 focus:ring-sky-500/20 w-full"
+					placeholder="ex: 150000"
+					data-coco-desc="Valeur estimée de vos autres biens immobiliers en euros"
+				/>
+			</label>
+			<label class="flex flex-col gap-1.5">
+				<span class="text-[11px] text-zinc-400 font-medium">Type de bien</span>
+				<select
+					value={netWorth?.property_other_type ?? 'none'}
+					onchange={(e) => {
+						if (!netWorth) netWorth = {};
+						netWorth.property_other_type = (e.target as HTMLSelectElement).value;
+						saveNetWorth();
+					}}
+					class="bg-zinc-900/60 border border-zinc-700/40 rounded-lg px-3 py-2 text-xs text-zinc-200 focus:outline-none focus:border-sky-500/60 focus:ring-1 focus:ring-sky-500/20 w-full"
+					data-coco-desc="Type du bien immobilier secondaire"
+				>
+					<option value="none">Aucun autre bien</option>
+					<option value="secondary">Résidence secondaire</option>
+					<option value="rental">Bien locatif</option>
+					<option value="land">Terrain / autre</option>
+				</select>
+			</label>
+		</div>
+
+		{#if (netWorth?.property_other_value ?? 0) > 0 && netWorth?.property_other_type === 'rental'}
+			<div class="mt-3 text-[10px] text-amber-300 bg-amber-950/20 border border-amber-800/30 rounded-lg p-2">
+				⚠️ Vous avez un bien locatif ({((netWorth?.property_other_value ?? 0)).toLocaleString('fr-FR')}€).
+				Pour modéliser ses revenus, ajoutez un projet dans la section <a href="/projects" class="underline">Projets</a>.
+			</div>
+		{/if}
+
+		{#if (netWorth?.property_other_value ?? 0) > 0}
+			<div class="mt-3 text-[10px] text-zinc-500 bg-zinc-900/40 rounded-lg p-2">
+				<p>Ce bien est inclus dans votre patrimoine net. Les revenus locatifs éventuels sont à configurer dans « Projets ».</p>
+			</div>
 		{/if}
 	</Card>
 

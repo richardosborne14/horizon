@@ -57,6 +57,10 @@ class NetWorthSnapshot(Base):
     # ── Property ─────────────────────────────────────────────────────────
     property_primary_value = Column(Numeric(12, 2), default=0)  # Résidence principale
     property_other_value = Column(Numeric(12, 2), default=0)    # Other property
+    residence_type = Column(String(30), nullable=False, server_default="primary_residence")
+    property_other_type = Column(String(30), nullable=False, server_default="none")
+    # residence_type: 'primary_residence', 'rental', 'secondary', 'land'
+    # property_other_type: 'none', 'rental', 'secondary', 'land'
     property_appreciation_rate = Column(Numeric(5, 4), default=0.02)  # Annual appreciation (2% default)
     downsize_enabled = Column(Boolean, default=False)           # Enable downsizing simulation
     downsize_year = Column(Integer, nullable=True)               # Year of downsizing

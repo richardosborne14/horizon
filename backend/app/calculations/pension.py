@@ -217,6 +217,32 @@ def _inflate_threshold(
     return base_threshold * ((Decimal("1") + inflation_rate) ** year_index)
 
 
+def get_ae_projected_annual(income_sources: list[dict] | None) -> Decimal:
+    """Return current-year projected AE annual CA from active income sources.
+
+    Used for pension SAM calculations for ongoing AE periods (TASK-8.12).
+    Sums all active AE revenue sources for the user earner.
+
+    Args:
+        income_sources: List of income source dicts from ProjectionInput.
+            Each has keys: earner, amount, frequency, is_ae_revenue, start_date, end_date.
+
+    Returns:
+        Annual projected AE CA as Decimal.
+    """
+    if not income_sources:
+        return Decimal("0")
+
+    monthly = sum(
+        Decimal(str(s.get("amount", "0")))
+        for s in income_sources
+        if s.get("earner") == "user"
+        and s.get("is_ae_revenue", True)
+        and s.get("frequency") != "one_time"
+    )
+    return monthly * Decimal("12")
+
+
 def estimate_monthly_pension_v2(
     birth_year: int,
     career_periods: list[dict[str, Any]],
@@ -225,6 +251,7 @@ def estimate_monthly_pension_v2(
     retirement_age: int,
     current_year: int,
     inflation_rate: Decimal = Decimal("0.025"),
+    income_sources: list[dict] | None = None,
 ) -> dict[str, Any]:
     """Career-aware pension estimation (TASK-6.2)."""
     from datetime import date as date_type
@@ -269,12 +296,29 @@ def estimate_monthly_pension_v2(
                 trimestres_ae_total += t
                 if annual_gross > 0:
                     all_ae_ca[yr] = all_ae_ca.get(yr, Decimal("0")) + annual_gross
-            elif ptype == "unemployment":
-                daily = cp.get("daily_allocation")
-                if isinstance(daily, (int, float)):
-                    daily = Decimal(str(daily))
-                t = _compute_unemployment_trimestres(start, end, daily)
-                trimestres_other += t
+            elif ptype in ("unemployment", "chomage"):
+                # Chômage indemnisé (Pôle Emploi / France Travail):
+                # Each month validates 1 trimestre for régime général.
+                # No SAM contribution. TASK-8.8.A
+                if ptype == "chomage":
+                    # 1 trimestre per month of allocation (simplified)
+                    months = max(0, (end - start).days // 30)
+                    t = min(months, MAX_TRIMESTRES_PER_YEAR * ((end.year - start.year) + 1))
+                    trimestres_other += t
+                else:
+                    daily = cp.get("daily_allocation")
+                    if isinstance(daily, (int, float)):
+                        daily = Decimal(str(daily))
+                    t = _compute_unemployment_trimestres(start, end, daily)
+                    trimestres_other += t
+            elif ptype in ("stage",):
+                # Paid internship: trimestres if salary >= 150 × SMIC per trimestre.
+                # Treat like CDD for trimestre counting (TASK-8.8.B).
+                threshold = _inflate_threshold(salarie_threshold_base, year_index, inflation_rate)
+                t = _compute_salarie_trimestres(annual_gross, threshold, is_full, time_pct)
+                trimestres_salarie += t
+                if annual_gross > 0:
+                    all_salaries[yr] = all_salaries.get(yr, Decimal("0")) + annual_gross
             elif ptype == "parental_leave":
                 t = _compute_avpf_trimestres(start, end, avpf_so_far)
                 avpf_so_far += t
@@ -381,6 +425,83 @@ def estimate_monthly_pension_v2(
 
 
 # ── CC Trimestre Calculation (TASK-7.7) ──────────────────────────────────────
+
+
+def detect_career_gaps(
+    career_periods: list[dict[str, Any]],
+    user_birth_date: date,
+    current_date: date | None = None,
+) -> list[dict[str, Any]]:
+    """Find unrecorded calendar gaps in career history after age 18.
+
+    Gaps < 3 months are ignored (holidays, transitions).
+    Each gap includes potential_trimestres lost (1 per 3 months).
+
+    Args:
+        career_periods: List of career period dicts with start_date, end_date,
+            period_type, owner. Only "user" periods are checked.
+        user_birth_date: User's birth date.
+        current_date: Reference date (defaults to today).
+
+    Returns:
+        List of gap dicts with keys: start, end, months, user_age_start,
+        potential_trimestres.
+    """
+    from datetime import date as date_type
+    from dateutil.relativedelta import relativedelta
+
+    MIN_GAP_MONTHS = 3
+    today = current_date or date_type.today()
+    career_start = date_type(user_birth_date.year + 18, user_birth_date.month, 1)
+
+    # Filter to user periods only, sort by start_date
+    user_periods = sorted(
+        [p for p in career_periods if p.get("owner", "user") == "user"],
+        key=lambda p: p["start_date"] if isinstance(p["start_date"], date_type) else date_type.fromisoformat(p["start_date"]),
+    )
+
+    gaps: list[dict[str, Any]] = []
+    cursor = career_start
+
+    for period in user_periods:
+        start = period["start_date"]
+        if isinstance(start, str):
+            start = date_type.fromisoformat(start)
+
+        if start > cursor:
+            gap_months = (start.year - cursor.year) * 12 + (start.month - cursor.month)
+            if gap_months >= MIN_GAP_MONTHS:
+                age_at_gap = cursor.year - user_birth_date.year
+                gaps.append({
+                    "start": cursor.isoformat(),
+                    "end": start.isoformat(),
+                    "months": gap_months,
+                    "user_age_start": age_at_gap,
+                    "potential_trimestres": gap_months // 3,
+                })
+
+        end = period.get("end_date")
+        if end:
+            if isinstance(end, str):
+                end = date_type.fromisoformat(end)
+            cursor = max(cursor, end + relativedelta(days=1))
+        else:
+            cursor = today  # ongoing period covers everything after
+
+    # Check for gap at end of recorded history up to today
+    if cursor < today:
+        gap_months = (today.year - cursor.year) * 12 + (today.month - cursor.month)
+        if gap_months >= MIN_GAP_MONTHS:
+            age_at_gap = cursor.year - user_birth_date.year
+            gaps.append({
+                "start": cursor.isoformat(),
+                "end": today.isoformat(),
+                "months": gap_months,
+                "user_age_start": age_at_gap,
+                "potential_trimestres": gap_months // 3,
+            })
+
+    return gaps
 
 
 def estimate_cc_trimestres_per_year(cc_option: str, user_ca: Decimal) -> int:

@@ -54,6 +54,9 @@ class UserProfile(Base):
     tax_parts = Column(
         Numeric(3, 1), nullable=False, server_default="1.0"
     )
+    tax_parts_manual_override = Column(
+        Boolean, nullable=False, server_default="false"
+    )
 
     # ── Status ─────────────────────────────────────────────────────────────
     status = Column(

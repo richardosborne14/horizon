@@ -9,50 +9,84 @@ the 4 activity types. Rates are stored in code (not DB) because:
 
 REVIEW ANNUALLY: Update projected rates when URSSAF publishes new schedule.
 
+Sources:
+  - Decree n°2024-484: July 2024 rate increase to 23.1%
+  - Decree n°2025-943: 2026 rate schedule (25.6% for BNC non-CIPAV)
+  - Art. 50-0 CGI: Micro-entreprise CA ceilings
+
 Rates include: URSSAF base + versement libératoire IR (~2.2%)
               + formation professionnelle + CFP.
+
+TASK-8.3: Updated rates to 2026-correct official schedule.
 """
 
 from decimal import Decimal
 from typing import Any
 
 
-# ── Rate schedules ─────────────────────────────────────────────────────────────
-# Each entry: {"from_year": int, "rate": Decimal}
-# Rate effective from 1 January of from_year until the next entry's from_year.
-# Sources: URSSAF published rates + legislative trend projections.
+# ── AE BNC CA ceiling ────────────────────────────────────────────────────────
+# 83,600 €/year for BNC prestations de services (2026-2028, loi de finances 2026).
+# When CA exceeds this ceiling, the AE must switch to régime réel.
+AE_BNC_CEILING = Decimal("83600")
 
+
+# ── Rate schedules ─────────────────────────────────────────────────────────────
+# Each entry: (effective_from_year, effective_from_month, rate)
+# Rate effective from (year, month) until the next entry.
+# Sources: URSSAF published rates, decrees n°2024-484 and n°2025-943.
+
+# BNC non-réglementée (SSI, non-CIPAV) — e.g. conseil, formation, freelance
+BNC_SSI_RATE_SCHEDULE = [
+    # (from_year, from_month, rate)
+    (2026, 1, Decimal("0.256")),   # 25.6% from 1 Jan 2026 (decree n°2025-943)
+    (2025, 1, Decimal("0.246")),   # 24.6% from 1 Jan 2025
+    (2024, 7, Decimal("0.231")),   # 23.1% from 1 Jul 2024
+    (2000, 1, Decimal("0.211")),   # 21.1% baseline (pre-H2 2024)
+]
+
+# BNC profession libérale CIPAV
+BNC_CIPAV_RATE_SCHEDULE = [
+    (2024, 7, Decimal("0.232")),   # 23.2% from 1 Jul 2024
+    (2000, 1, Decimal("0.212")),   # 21.2% baseline
+]
+
+# BIC services / artisan (stable)
+_BIC_SERVICES_RATE = Decimal("0.212")  # 21.2% (stable since Oct 2022)
+
+# BIC vente / marchandises (stable)
+_BIC_VENTE_RATE = Decimal("0.123")     # 12.3% (stable since Oct 2022)
+
+
+# Legacy dict-based schedule for backward compatibility with get_rate_schedule().
+# NOTE: This dict is for UI display only — the projection engine uses the
+# authoritative tuple schedules (BNC_SSI_RATE_SCHEDULE / BNC_CIPAV_RATE_SCHEDULE).
+# AUDIT-8.2.6 #10: removed duplicate 2024 entries that caused confusion.
+# The H1 2024 baseline (21.1%) is implicit; only the effective year-end rate shown.
 AE_RATE_SCHEDULE: dict[str, list[dict[str, object]]] = {
     "bnc_non_reglementee": [
-        {"from_year": 2024, "rate": Decimal("0.245")},
-        {"from_year": 2025, "rate": Decimal("0.252")},
-        {"from_year": 2026, "rate": Decimal("0.262")},
-        {"from_year": 2027, "rate": Decimal("0.268")},   # projected
-        {"from_year": 2028, "rate": Decimal("0.275")},   # projected
-        {"from_year": 2030, "rate": Decimal("0.285")},   # projected
-        {"from_year": 2035, "rate": Decimal("0.295")},   # projected
+        {"from_year": 2023, "rate": Decimal("0.211")},   # pre-H2 2024 baseline
+        {"from_year": 2024, "rate": Decimal("0.231")},   # H2 2024 (from 1 Jul)
+        {"from_year": 2025, "rate": Decimal("0.246")},
+        {"from_year": 2026, "rate": Decimal("0.256")},
     ],
     "bic_services": [
-        {"from_year": 2024, "rate": Decimal("0.218")},
-        {"from_year": 2025, "rate": Decimal("0.224")},
-        {"from_year": 2026, "rate": Decimal("0.237")},
-        {"from_year": 2028, "rate": Decimal("0.245")},   # projected
-        {"from_year": 2030, "rate": Decimal("0.255")},   # projected
-        {"from_year": 2035, "rate": Decimal("0.265")},   # projected
+        {"from_year": 2024, "rate": Decimal("0.212")},
+        {"from_year": 2026, "rate": Decimal("0.212")},   # stable
     ],
     "bic_vente": [
-        {"from_year": 2024, "rate": Decimal("0.132")},
-        {"from_year": 2026, "rate": Decimal("0.148")},
-        {"from_year": 2028, "rate": Decimal("0.155")},   # projected
-        {"from_year": 2030, "rate": Decimal("0.162")},   # projected
+        {"from_year": 2024, "rate": Decimal("0.123")},
+        {"from_year": 2026, "rate": Decimal("0.123")},   # stable
     ],
     "bnc_cipav": [
-        {"from_year": 2024, "rate": Decimal("0.232")},
-        {"from_year": 2026, "rate": Decimal("0.254")},
-        {"from_year": 2028, "rate": Decimal("0.262")},   # projected
-        {"from_year": 2030, "rate": Decimal("0.272")},   # projected
+        {"from_year": 2023, "rate": Decimal("0.212")},   # pre-H2 2024 baseline
+        {"from_year": 2024, "rate": Decimal("0.232")},   # H2 2024 (from 1 Jul)
+        {"from_year": 2026, "rate": Decimal("0.232")},   # stable at 23.2%
     ],
 }
+
+# For projection engine use — ordered list of (year, month, rate) with month granularity
+_BNC_SSI_RATE_SCHEDULE = BNC_SSI_RATE_SCHEDULE
+_BNC_CIPAV_RATE_SCHEDULE = BNC_CIPAV_RATE_SCHEDULE
 
 # CFE (Cotisation Foncière des Entreprises) base estimate for 2026.
 _CFE_BASE_2026 = Decimal("300")
@@ -61,42 +95,44 @@ _CFE_INFLATION_RATE = Decimal("0.025")
 
 # ── Public functions ───────────────────────────────────────────────────────────
 
-def get_ae_rate(activity_type: str, year: int) -> Decimal:
-    """Return the AE cotisation rate effective for the given year.
+def get_ae_rate(activity_type: str, year: int, month: int = 1) -> Decimal:
+    """Return the AE cotisation rate effective for the given year and month.
 
-    Walks the schedule for activity_type and returns the rate from the
-    latest entry where from_year <= year. For years before the earliest
-    entry, returns the earliest entry's rate. For years after the latest
-    entry, returns the latest entry's rate (current projection holds).
+    Uses the correct URSSAF schedule with month granularity for the
+    2024 mid-year rate change (July 2024).
 
     Args:
-        activity_type: One of 'bnc_non_reglementee', 'bic_services',
+        activity_type: 'bnc_non_reglementee', 'bic_services',
                        'bic_vente', 'bnc_cipav'.
         year: The calendar year (e.g. 2026).
+        month: The calendar month (1=January, default). Important for 2024.
 
     Returns:
-        The combined AE rate as a Decimal (e.g. Decimal('0.262')).
+        The combined AE rate as a Decimal (e.g. Decimal('0.256')).
 
     Raises:
-        ValueError: If activity_type is not in the schedule.
+        ValueError: If activity_type is unknown.
     """
-    schedule = AE_RATE_SCHEDULE.get(activity_type)
-    if schedule is None:
-        raise ValueError(
-            f"Unknown activity type: {activity_type!r}. "
-            f"Valid types: {list(AE_RATE_SCHEDULE.keys())}"
-        )
+    # BIC types are stable — no schedule needed
+    if activity_type in ("bic_services", "bic_artisan"):
+        return _BIC_SERVICES_RATE
+    if activity_type in ("bic_vente",):
+        return _BIC_VENTE_RATE
 
-    # Schedule is ordered by from_year ascending. Walk until we
-    # find the last entry where from_year <= target year.
-    applicable_rate = schedule[0]["rate"]
-    for entry in schedule:
-        if int(entry["from_year"]) <= year:
-            applicable_rate = entry["rate"]
-        else:
-            break
+    # BNC types have time-based schedules
+    if activity_type in ("bnc_non_reglementee", "bnc_reglementee_ssi"):
+        schedule = _BNC_SSI_RATE_SCHEDULE
+    elif activity_type in ("bnc_reglementee_cipav", "bnc_cipav"):
+        schedule = _BNC_CIPAV_RATE_SCHEDULE
+    else:
+        # Safe default: highest known rate
+        return Decimal("0.256")
 
-    return Decimal(str(applicable_rate))
+    # Find applicable rate for (year, month)
+    for from_year, from_month, rate in schedule:
+        if (year, month) >= (from_year, from_month):
+            return rate
+    return schedule[-1][2]  # fallback to oldest
 
 
 def get_rate_schedule(activity_type: str) -> list[dict[str, Any]]:

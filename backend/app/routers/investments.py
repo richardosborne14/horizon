@@ -46,11 +46,18 @@ router = APIRouter(prefix="/investments", tags=["investments"])
 
 def _spec_to_pydantic(key: str, spec: dict) -> VehicleSpec:
     """Convert a VEHICLE_SPECS dict entry to a VehicleSpec Pydantic model."""
+    # Some vehicles use scale-dependent rates (rates_by_scale with
+    # pessimistic/moderate/optimistic) instead of a flat "rate" key.
+    # For display/API purposes, use the moderate scale as the canonical rate.
+    rate = spec.get("rate")
+    if rate is None and "rates_by_scale" in spec:
+        rate = spec["rates_by_scale"].get("moderate", Decimal("0"))
+
     return VehicleSpec(
         key=key,
         label=spec["label"],
         description=spec["description"],
-        rate=spec["rate"],
+        rate=rate,
         tax_free=spec["tax_free"],
         tax_rate=spec["tax_rate"],
         ceiling=spec["ceiling"],
@@ -58,6 +65,8 @@ def _spec_to_pydantic(key: str, spec: dict) -> VehicleSpec:
         color=spec["color"],
         liquidity=spec["liquidity"],
         tax_deductible=spec.get("tax_deductible", False),
+        informational=spec.get("informational", False),
+        lock_up_years=spec.get("lock_up_years"),
     )
 
 
@@ -144,6 +153,19 @@ async def list_vehicles():
         key: _spec_to_pydantic(key, spec)
         for key, spec in VEHICLE_SPECS.items()
     }
+
+
+@router.get("/catalog")
+async def get_vehicle_catalog():
+    """Return the full vehicle rules catalog for the savings tab rules panel (TASK-8.9.B).
+
+    Returns VEHICLE_RULES from vehicles.py — rate, tax, ceiling, liquidity,
+    lock_up, best_for, watch_out, horizon, open_conditions per vehicle.
+    Public endpoint — no auth required.
+    """
+    from app.calculations.vehicles import VEHICLE_RULES
+
+    return {"vehicles": VEHICLE_RULES}
 
 
 # ── Authenticated Routes ──────────────────────────────────────────────────────

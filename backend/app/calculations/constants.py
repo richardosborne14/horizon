@@ -44,6 +44,21 @@ INFLATION_SCALES: dict = {
     },
 }
 
+# ── AE cotisation rate annual growth by scale (AUDIT-8.2.5) ──────────────────
+# Historical trend: 21.1% → 23.1% → 24.6% → 25.6% over 2019-2026 ≈ +0.75pp/yr.
+# The get_ae_rate() schedule only goes to 2026. Beyond that, future rates are
+# projected. Use conservative increments (lower than historical) to avoid
+# over-penalising users while still showing realistic upward pressure.
+# At 28 years (richard's projection horizon), the difference vs no-growth:
+#   pessimistic: +0.004 × 28 = +11.2pp extra — significant but plausible
+#   moderate:    +0.002 × 28 = +5.6pp extra
+#   optimistic:  +0.000 × 28 = no change (rates stabilise)
+AE_RATE_ANNUAL_GROWTH: dict[str, Decimal] = {
+    "optimistic": Decimal("0.000"),   # rates stabilise at 2026 level
+    "moderate": Decimal("0.002"),     # +0.2pp/year — gradual URSSAF creep
+    "pessimistic": Decimal("0.004"),  # +0.4pp/year — near historical average
+}
+
 # ── Growth presets ─────────────────────────────────────────────────────────────
 # Four revenue growth presets for the CA projection.
 # conservative: 1%/yr — stability, no major changes
@@ -72,6 +87,23 @@ GROWTH_PRESETS: dict = {
         "rate": None,
         "description": "Vous définissez votre propre taux de croissance annuel.",
     },
+}
+
+
+# ── Income growth rates per scale (TASK-8.7) ───────────────────────────────────
+# Applied when an income source has no per-source annual_growth_rate and no
+# global growth_rate. AE income grows differently from salaries.
+# Nominal rates (not inflation-adjusted).
+INCOME_GROWTH_RATES: dict[str, Decimal] = {
+    "optimistic": Decimal("0.04"),   # 4% nominal — strong revenue growth
+    "moderate": Decimal("0.02"),     # 2% nominal — matches inflation roughly
+    "pessimistic": Decimal("0.00"),  # 0% — flat income in nominal terms
+}
+
+SALARY_GROWTH_RATES: dict[str, Decimal] = {
+    "optimistic": Decimal("0.03"),   # 3% nominal
+    "moderate": Decimal("0.015"),    # 1.5% nominal
+    "pessimistic": Decimal("0.00"),  # 0% — flat salary
 }
 
 

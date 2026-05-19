@@ -16,6 +16,11 @@ def _mock(year=2026, age=40, **kwargs):
         "year": year,
         "age": age,
         "net_annual": Decimal("30000"),
+        # AUDIT-8.2.4: savings rate now uses gross - charges - cfe as denominator.
+        # defaults: 50k gross, 25.6% AE rate → ~12.8k charges, 300 CFE → 36.9k net income
+        "gross_annual": Decimal("50000"),
+        "charges": Decimal("12800"),
+        "cfe": Decimal("300"),
         "total_wealth": Decimal("50000"),
         "total_outgoing": Decimal("24000"),  # 2000/month
         "total_income": Decimal("50000"),
@@ -178,12 +183,16 @@ def test_savings_rate_high():
 
 
 def test_savings_rate_low():
-    """8% savings rate → ~32."""
+    """~10% savings rate → ~41.
+
+    AUDIT-8.2.4: denominator is now gross - charges - cfe (36.9k), not net_annual.
+    monthly=320 → 3840/year. 3840/36900 = 10.4% → 10.4/25*100 ≈ 41.
+    """
     tl = [_mock(net_annual=Decimal("48000"))]
     allocs = [{"vehicle_key": "pea", "monthly": 320, "balance": 10000}]
-    # 320 * 12 / 48000 = 0.08 → 8/25*100 = 32
+    # 320 * 12 = 3840 / (50000-12800-300=36900) = 10.4% → score ≈ 41
     result = compute_readiness_score(tl, _make_summary(), {}, allocs)
-    assert 28 <= result.components["savings_rate"] <= 36
+    assert 38 <= result.components["savings_rate"] <= 46
 
 
 def test_diversification_full():

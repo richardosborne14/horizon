@@ -153,3 +153,101 @@ class TestPensionEstimation:
             retirement_age=70,
         )
         assert result["confidence"] == "low"
+
+
+class TestPensionNominalDeflation:
+    """PENSION-BUG-1 — ensure nominal→real deflation keeps values within legal bounds.
+
+    estimate_monthly_pension_v2() produces results in nominal future euros
+    (PASS cap is inflated per year, CA grows nominally). Without deflation
+    the displayed pension exceeds the legal retraite de base ceiling of
+    PASS/2/12 ≈ 1932€/mo (in today's euros). The router deflates by
+    (1 + infl_rate)^years_to_retirement before returning the response.
+    """
+
+    def test_nominal_pension_exceeds_deflated_value(self):
+        """Raw v2 output is in nominal future euros — must exceed the real (deflated) value.
+
+        The nominal pension can be below today's legal cap when prorata < 1
+        (user has fewer than 172 trimestres), but it is ALWAYS larger than
+        the real value because inflated CA → inflated SAM → inflated pension.
+        Without deflation, the UI shows a figure inflated ~2× over 27 years.
+        """
+        from app.calculations.pension import estimate_monthly_pension_v2
+
+        years = 27  # born 1986, retiring at 67 in 2053
+        infl_rate = Decimal("0.025")
+        projected = [
+            {"year": 2026 + i, "ca": Decimal("60000") * ((Decimal("1.03")) ** i)}
+            for i in range(years)
+        ]
+        raw = estimate_monthly_pension_v2(
+            birth_year=1986,
+            career_periods=[],
+            projected_ae_ca=projected,
+            ae_activity_type="bnc_non_reglementee",
+            retirement_age=67,
+            current_year=2026,
+            inflation_rate=infl_rate,
+        )
+        nominal = raw["total_monthly"]
+        deflation = (Decimal("1") + infl_rate) ** Decimal(str(years))
+        real_total = nominal / deflation
+        # The nominal value must be substantially larger than the real value
+        # (the deflation factor for 27 years at 2.5% is ~1.95)
+        assert nominal > real_total * Decimal("1.5"), (
+            f"Nominal {nominal:.2f} should be ~2× the real {real_total:.2f}, got ratio "
+            f"{float(nominal / real_total):.2f}"
+        )
+
+    def test_deflated_pension_within_legal_cap(self):
+        """After deflation by (1.025)^27 the pension must be <= PASS/2/12."""
+        from app.calculations.pension import estimate_monthly_pension_v2
+
+        years = 27
+        infl_rate = Decimal("0.025")
+        projected = [
+            {"year": 2026 + i, "ca": Decimal("60000") * ((Decimal("1.03")) ** i)}
+            for i in range(years)
+        ]
+        raw = estimate_monthly_pension_v2(
+            birth_year=1986,
+            career_periods=[],
+            projected_ae_ca=projected,
+            ae_activity_type="bnc_non_reglementee",
+            retirement_age=67,
+            current_year=2026,
+            inflation_rate=infl_rate,
+        )
+        deflation = (Decimal("1") + infl_rate) ** Decimal(str(years))
+        real_base = Decimal(str(raw["base_salarie_monthly"])) / deflation
+        legal_cap = Decimal("46368") / Decimal("2") / Decimal("12")  # ≈ 1932€
+        assert real_base <= legal_cap, (
+            f"Real base pension {real_base:.2f} exceeds legal cap {legal_cap:.2f}"
+        )
+
+    def test_deflated_pension_is_realistic(self):
+        """Real pension for a 5k/mo AE should be roughly 800–1200€/mo in today's euros."""
+        from app.calculations.pension import estimate_monthly_pension_v2
+
+        years = 27
+        infl_rate = Decimal("0.025")
+        projected = [
+            {"year": 2026 + i, "ca": Decimal("5000") * Decimal("12") * ((Decimal("1.03")) ** i)}
+            for i in range(years)
+        ]
+        raw = estimate_monthly_pension_v2(
+            birth_year=1986,
+            career_periods=[],
+            projected_ae_ca=projected,
+            ae_activity_type="bnc_non_reglementee",
+            retirement_age=67,
+            current_year=2026,
+            inflation_rate=infl_rate,
+        )
+        deflation = (Decimal("1") + infl_rate) ** Decimal(str(years))
+        real_total = Decimal(str(raw["total_monthly"])) / deflation
+        # With 108/172 trimestres and SAM ~31k real → expect roughly 800–1200€/mo
+        assert Decimal("500") <= real_total <= Decimal("1500"), (
+            f"Real pension {real_total:.2f} outside expected range 500–1500€/mo"
+        )

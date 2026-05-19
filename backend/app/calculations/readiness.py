@@ -105,7 +105,7 @@ def compute_readiness_score(
     )
 
     # ── Component 2: Wealth durability (25%) ────────────────────────
-    wealth_durability = _compute_wealth_durability(summary)
+    wealth_durability = _compute_wealth_durability(summary, timeline)
 
     # ── Component 3: Savings rate (15%) ─────────────────────────────
     savings_rate = _compute_savings_rate(timeline, allocations)
@@ -219,11 +219,19 @@ def _compute_goal_coverage(
     return int(float((ratio - Decimal("0.3")) / Decimal("0.9") * 100))
 
 
-def _compute_wealth_durability(summary: dict[str, Any]) -> int:
+def _compute_wealth_durability(
+    summary: dict[str, Any],
+    timeline: list[Any] | None = None,
+) -> int:
     """Wealth durability (25%): how long does wealth last post-retirement?
 
     100 = lasts to 95+. 0 = runs out within 5 years of retirement.
     Linear in between.
+
+    Args:
+        summary: compute_summary() result.
+        timeline: Full projection timeline (needed for accurate retirement age).
+                  AUDIT-8.2.4: was hardcoded to 70, now derived from timeline.
     """
     exhaustion_age = summary.get("wealth_exhaustion_age")
     if exhaustion_age is None:
@@ -232,9 +240,15 @@ def _compute_wealth_durability(summary: dict[str, Any]) -> int:
     if exhaustion_age >= 95:
         return 100
 
-    # Assume retirement at ~70 (retirement_start_age)
-    retirement_start = 70
-    # Find retirement start from summary if available, else default
+    # AUDIT-8.2.4: derive retirement_start from the timeline so users
+    # targeting 62 or 75 get a correct durability calculation.
+    retirement_start = 70  # sensible default if timeline not available
+    if timeline:
+        retirement_entry = next(
+            (t for t in timeline if getattr(t, "is_retirement", False)), None
+        )
+        if retirement_entry:
+            retirement_start = getattr(retirement_entry, "age", 70)
     years_after_retirement = exhaustion_age - retirement_start
     if years_after_retirement <= 5:
         return 0
@@ -248,7 +262,15 @@ def _compute_savings_rate(
     timeline: list[Any],
     allocations: list[dict[str, Any]],
 ) -> int:
-    """Savings rate (15%): current savings as % of net income.
+    """Savings rate (15%): current savings as % of net income after charges.
+
+    Denominator = gross_annual - charges - cfe (income available before
+    living expenses). This is the meaningful figure — it shows what fraction
+    of disposable income is saved, not what fraction of the surplus is saved.
+
+    AUDIT-8.2.4 fix: old denominator was net_annual (surplus after ALL expenses)
+    which produced wildly inflated rates (e.g. 5k savings / 14k surplus = 35%,
+    but actual savings rate vs net income = 5k / 59k = 8.5%).
 
     100 = ≥ 25%. 0 = < 5%. Linear in between.
     """
@@ -256,15 +278,19 @@ def _compute_savings_rate(
         return 0
 
     t0 = timeline[0]
-    net_annual = getattr(t0, "net_annual", Decimal("0"))
-    if net_annual <= 0:
+    gross_annual = getattr(t0, "gross_annual", Decimal("0"))
+    charges = getattr(t0, "charges", Decimal("0"))
+    cfe = getattr(t0, "cfe", Decimal("0"))
+    # Net income after charges = take-home before living expenses
+    net_income_after_charges = gross_annual - charges - cfe
+    if net_income_after_charges <= 0:
         return 0
 
     total_monthly_savings = sum(
         Decimal(str(a.get("monthly", 0))) for a in allocations
     )
     total_annual_savings = total_monthly_savings * Decimal("12")
-    rate = total_annual_savings / net_annual
+    rate = total_annual_savings / net_income_after_charges
 
     if rate >= Decimal("0.25"):
         return 100

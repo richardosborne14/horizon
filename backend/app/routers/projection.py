@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.calculations.constants import INFLATION_SCALES, get_growth_rate
+from app.calculations.constants import INFLATION_SCALES, AE_RATE_ANNUAL_GROWTH, get_growth_rate
 from app.calculations.projection import (
     ProjectionInput,
     compute_summary,
@@ -347,6 +347,12 @@ async def _assemble_input(
 
     if nw is not None:
         prop_value = (nw.property_primary_value or Decimal("0"))
+        if nw.property_appreciation_rate is None:
+            # AUDIT-8.2.6 #14: log when defaulting silently so it's visible in backend logs.
+            # Users who haven't set an appreciation rate get 2% — the French long-run average.
+            logger.info(
+                "property_appreciation_rate not set for user %s — defaulting to 2%%/yr", user_id
+            )
         prop_appreciation = (nw.property_appreciation_rate or Decimal("0.02"))
         downsize_enabled = bool(nw.downsize_enabled)
         downsize_year = nw.downsize_year
@@ -391,6 +397,8 @@ async def _assemble_input(
         downsize_enabled=downsize_enabled,
         downsize_year=downsize_year,
         downsize_target_value=downsize_target,
+        # AUDIT-8.2.5: apply scale-appropriate AE rate annual growth
+        ae_rate_annual_growth=AE_RATE_ANNUAL_GROWTH.get(scale, Decimal("0")),
     )
 
 
@@ -604,6 +612,12 @@ async def get_pension_estimate(
 
     # ── User pension (v2 career-aware) ───────────────────────────
     # Build projected AE CA from income sources
+    # user_years_to_ret must be in outer scope — referenced by deflation block
+    # regardless of whether income_sources is populated.
+    user_years_to_ret = max(
+        0,
+        (profile.target_retirement_age or 67) - (date.today().year - profile.birth_date.year),
+    )
     user_projected_ae_ca: list[dict] = []
     if inp.income_sources:
         user_ae_sources = [
@@ -618,7 +632,6 @@ async def get_pension_estimate(
                 user_base_monthly += amt / Decimal("12")
             elif freq == "monthly":
                 user_base_monthly += amt
-        user_years_to_ret = max(0, (profile.target_retirement_age or 67) - (date.today().year - profile.birth_date.year))
         user_growth = inp.growth_rate
         for i in range(user_years_to_ret):
             yr = date.today().year + i
@@ -645,6 +658,18 @@ async def get_pension_estimate(
         "confidence": user_v2_raw.get("confidence", "medium"),
         "is_taux_plein": user_v2_raw.get("is_taux_plein", False),
     }
+
+    # PENSION-BUG-1 — Deflate nominal pension to today's purchasing power.
+    # estimate_monthly_pension_v2() projects CA forward at nominal growth rate
+    # (real growth + inflation) and inflates the PASS cap year-by-year.
+    # The resulting SAM and pension are therefore in nominal retirement-year
+    # euros, which is ~2× today's purchasing power over 28 years at 2.5%
+    # inflation.  Divide by (1 + infl_rate)^years_to_retirement so the card
+    # shows a figure users can compare against today's living costs.
+    if user_years_to_ret > 0:
+        _user_deflation = (Decimal("1") + infl_rate) ** Decimal(str(user_years_to_ret))
+        for _k in ("total_monthly", "base_monthly", "complementaire_monthly"):
+            user_pension[_k] = (user_pension[_k] / _user_deflation).quantize(Decimal("0.01"))
 
     # ── Spouse pension (TASK-7.7) ──────────────────────────────────────
     spouse_pension = None
@@ -783,6 +808,16 @@ async def get_pension_estimate(
             "confidence": spouse_v2.get("confidence", "low"),
         }
 
+        # PENSION-BUG-1 (spouse) — same nominal→real deflation as user pension.
+        # spouse_age_now is computed above (line ~700); years_to_ret is already in scope.
+        _spouse_years = max(0, profile.target_retirement_age - (
+            date_type.today().year - spouse.birth_date.year
+        ))
+        if _spouse_years > 0:
+            _spouse_deflation = (Decimal("1") + infl_rate) ** Decimal(str(_spouse_years))
+            for _k in ("total_monthly", "base_monthly", "complementaire_monthly"):
+                spouse_pension[_k] = (spouse_pension[_k] / _spouse_deflation).quantize(Dec("0.01"))
+
     # ── Household total ────────────────────────────────────────────────
     user_monthly = Dec(str(user_pension.get("total_monthly", "0")))
     spouse_monthly = (
@@ -794,10 +829,19 @@ async def get_pension_estimate(
         user_monthly + spouse_monthly
     ).quantize(Dec("0.01"))
 
+    # ── Career gaps (TASK-8.8.D) ───────────────────────────────────────
+    from app.calculations.pension import detect_career_gaps
+
+    career_gaps = detect_career_gaps(
+        career_periods=user_career_dicts,
+        user_birth_date=profile.birth_date,
+    )
+
     return {
         "user_pension": user_pension,
         "spouse_pension": spouse_pension,
         "household_pension_monthly": household_pension_monthly,
+        "career_gaps": career_gaps,
     }
 
 

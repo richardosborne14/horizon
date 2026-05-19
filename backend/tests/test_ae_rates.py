@@ -29,60 +29,69 @@ class TestGetAeRate:
     """Tests for get_ae_rate() — the core rate lookup function."""
 
     def test_known_2026_rate_bnc_non_reglementee(self):
-        """BNC non-réglementée should return 26.2% for 2026."""
+        """BNC non-réglementée should return 25.6% for 2026 (decree n°2025-943)."""
         rate = get_ae_rate("bnc_non_reglementee", 2026)
-        assert rate == Decimal("0.262")
+        assert rate == Decimal("0.256")
+
+    def test_known_2025_rate_bnc_non_reglementee(self):
+        """BNC non-réglementée should return 24.6% for 2025."""
+        rate = get_ae_rate("bnc_non_reglementee", 2025)
+        assert rate == Decimal("0.246")
+
+    def test_known_2027_rate_bnc_non_reglementee(self):
+        """BNC non-réglementée should return 25.6% for 2027 (stable)."""
+        rate = get_ae_rate("bnc_non_reglementee", 2027)
+        assert rate == Decimal("0.256")
+
+    def test_known_2024_rate_bnc_non_reglementee(self):
+        """BNC non-réglementée: H2 2024 = 23.1%."""
+        rate = get_ae_rate("bnc_non_reglementee", 2024, month=7)
+        assert rate == Decimal("0.231")
+
+    def test_known_2024_h1_rate_bnc_non_reglementee(self):
+        """BNC non-réglementée: H1 2024 = 21.1%."""
+        rate = get_ae_rate("bnc_non_reglementee", 2024, month=1)
+        assert rate == Decimal("0.211")
 
     def test_known_2026_rate_bic_services(self):
-        """BIC services should return 23.7% for 2026."""
+        """BIC services should return 21.2% (stable since Oct 2022)."""
         rate = get_ae_rate("bic_services", 2026)
-        assert rate == Decimal("0.237")
+        assert rate == Decimal("0.212")
 
     def test_known_2026_rate_bic_vente(self):
-        """BIC vente should return 14.8% for 2026."""
+        """BIC vente should return 12.3% (stable since Oct 2022)."""
         rate = get_ae_rate("bic_vente", 2026)
-        assert rate == Decimal("0.148")
+        assert rate == Decimal("0.123")
 
     def test_known_2026_rate_bnc_cipav(self):
-        """BNC CIPAV should return 25.4% for 2026."""
+        """BNC CIPAV should return 23.2% for 2026 (stable)."""
         rate = get_ae_rate("bnc_cipav", 2026)
-        assert rate == Decimal("0.254")
-
-    def test_rate_for_year_between_entries(self):
-        """Year between two entries should use the earlier entry's rate.
-
-        2029 is between the 2028 entry (0.275) and the 2030 entry (0.285).
-        Should return 0.275 (the 2028 entry applies until 2030).
-        """
-        rate = get_ae_rate("bnc_non_reglementee", 2029)
-        assert rate == Decimal("0.275")
+        assert rate == Decimal("0.232")
 
     def test_rate_for_far_future_uses_latest_projection(self):
-        """Year 2050 should use the latest projected rate (0.295 for BNC)."""
+        """Far future year returns the latest rate (25.6% for BNC)."""
         rate = get_ae_rate("bnc_non_reglementee", 2050)
-        assert rate == Decimal("0.295")
+        assert rate == Decimal("0.256")
 
     def test_rate_for_past_year_uses_earliest(self):
-        """Year 2020 (before earliest 2024 entry) returns earliest rate."""
-        rate = get_ae_rate("bnc_non_reglementee", 2020)
-        assert rate == Decimal("0.245")
+        """Year 2005 (before earliest effective entry) returns fallback rate (21.1%)."""
+        rate = get_ae_rate("bnc_non_reglementee", 2005)
+        assert rate == Decimal("0.211")
 
-    def test_rate_at_entry_boundary(self):
-        """Exact from_year uses that entry's rate."""
+    def test_rate_at_entry_boundary_2025(self):
+        """Exact from_year starts the new rate (24.6% for 2025)."""
         rate = get_ae_rate("bnc_non_reglementee", 2025)
-        assert rate == Decimal("0.252")
+        assert rate == Decimal("0.246")
 
-    def test_rate_at_entry_boundary_2028(self):
-        """Exact from_year for 2028 transition."""
-        rate = get_ae_rate("bnc_non_reglementee", 2028)
-        assert rate == Decimal("0.275")
+    def test_rate_at_entry_boundary_2026(self):
+        """Exact from_year starts the new rate (25.6% for 2026)."""
+        rate = get_ae_rate("bnc_non_reglementee", 2026)
+        assert rate == Decimal("0.256")
 
-    def test_unknown_activity_type_raises_valueerror(self):
-        """Invalid activity type should raise ValueError with helpful message."""
-        with pytest.raises(ValueError) as exc_info:
-            get_ae_rate("invalid_type", 2026)
-        assert "Unknown activity type" in str(exc_info.value)
-        assert "invalid_type" in str(exc_info.value)
+    def test_unknown_activity_type_returns_safe_default(self):
+        """Invalid activity type should return safe default (25.6%)."""
+        rate = get_ae_rate("invalid_type", 2026)
+        assert rate == Decimal("0.256")
 
 
 class TestGetRateSchedule:
@@ -155,31 +164,31 @@ class TestComputeAnnualCharges:
 
     def test_known_case_60000_bnc_2026(self):
         """60 000€ gross BNC in 2026:
-        URSSAF = 60000 * 0.262 = 15720
+        URSSAF = 60000 * 0.256 = 15360
         CFE = 300
-        Total = 16020
+        Total = 15660
         """
         result = compute_annual_charges(
             Decimal("60000"), "bnc_non_reglementee", 2026
         )
-        assert result["rate"] == Decimal("0.262")
-        assert result["urssaf_and_others"] == Decimal("15720.00")
+        assert result["rate"] == Decimal("0.256")
+        assert result["urssaf_and_others"] == Decimal("15360.00")
         assert result["cfe"] == Decimal("300")
-        assert result["total"] == Decimal("16020.00")
+        assert result["total"] == Decimal("15660.00")
 
     def test_known_case_30000_bic_services_2026(self):
         """30 000€ gross BIC services in 2026:
-        URSSAF = 30000 * 0.237 = 7110
+        URSSAF = 30000 * 0.212 = 6360
         CFE = 300
-        Total = 7410
+        Total = 6660
         """
         result = compute_annual_charges(
             Decimal("30000"), "bic_services", 2026
         )
-        assert result["rate"] == Decimal("0.237")
-        assert result["urssaf_and_others"] == Decimal("7110.00")
+        assert result["rate"] == Decimal("0.212")
+        assert result["urssaf_and_others"] == Decimal("6360.00")
         assert result["cfe"] == Decimal("300")
-        assert result["total"] == Decimal("7410.00")
+        assert result["total"] == Decimal("6660.00")
 
     def test_all_values_are_decimal(self):
         """Every value in the result should be a Decimal."""
@@ -203,16 +212,6 @@ class TestComputeAnnualCharges:
 
 class TestValueErrorMessages:
     """Ensure error messages are helpful for debugging."""
-
-    def test_get_ae_rate_lists_valid_types(self):
-        """Error message should include the list of valid types."""
-        with pytest.raises(ValueError) as exc_info:
-            get_ae_rate("foo", 2026)
-        msg = str(exc_info.value)
-        assert "bnc_non_reglementee" in msg
-        assert "bic_services" in msg
-        assert "bic_vente" in msg
-        assert "bnc_cipav" in msg
 
     def test_get_rate_schedule_lists_valid_types(self):
         """Error message should include the list of valid types."""
